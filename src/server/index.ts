@@ -11,6 +11,7 @@ import type {
   ContactUser,
   DirectMessage,
   Message,
+  UserRoom,
 } from "../shared";
 
 type UserRecord = {
@@ -28,6 +29,13 @@ type StoredDirectMessage = {
   toUserId: string;
   fromDisplayName: string;
   createdAt: number;
+};
+
+type StoredUserRoom = {
+  roomId: string;
+  roomName: string;
+  role: "creator" | "member";
+  joinedAt: number;
 };
 
 const SESSION_COOKIE = "chat_session";
@@ -167,6 +175,17 @@ export class Auth {
         to_user_id TEXT NOT NULL,
         from_display_name TEXT NOT NULL,
         created_at INTEGER NOT NULL
+      )`,
+    );
+
+    this.state.storage.sql.exec(
+      `CREATE TABLE IF NOT EXISTS user_rooms (
+        user_id TEXT NOT NULL,
+        room_id TEXT NOT NULL,
+        room_name TEXT NOT NULL,
+        role TEXT NOT NULL,
+        joined_at INTEGER NOT NULL,
+        PRIMARY KEY (user_id, room_id)
       )`,
     );
 
@@ -496,6 +515,75 @@ export class Auth {
       return json({ message });
     }
 
+    if (request.method === "POST" && url.pathname === "/rooms/join") {
+      const body = (await request.json()) as {
+        username?: string;
+        roomId?: string;
+        roomName?: string;
+        role?: "creator" | "member";
+      };
+      const username = body.username?.trim();
+      const roomId = body.roomId?.trim();
+      const roomName = body.roomName?.trim() || roomId;
+      const role = body.role === "creator" ? "creator" : "member";
+
+      if (!username || !roomId) {
+        return json({ error: "نام کاربری و شناسه اتاق الزامی است." }, 400);
+      }
+
+      const user = this.getUserByUsername(username);
+      if (!user) {
+        return json({ error: "کاربر جاری پیدا نشد." }, 404);
+      }
+
+      const joinedAt = Date.now();
+      this.state.storage.sql.exec(
+        `INSERT INTO user_rooms (user_id, room_id, room_name, role, joined_at)
+         VALUES (?, ?, ?, ?, ?)
+         ON CONFLICT(user_id, room_id) DO UPDATE SET
+           room_name = excluded.room_name,
+           role = CASE
+             WHEN user_rooms.role = 'creator' OR excluded.role = 'creator' THEN 'creator'
+             ELSE 'member'
+           END`,
+        user.id,
+        roomId,
+        roomName,
+        role,
+        joinedAt,
+      );
+
+      return json({ ok: true });
+    }
+
+    if (request.method === "GET" && url.pathname === "/rooms") {
+      const username = url.searchParams.get("username")?.trim();
+      if (!username) {
+        return json({ error: "نام کاربری لازم است." }, 400);
+      }
+
+      const user = this.getUserByUsername(username);
+      if (!user) {
+        return json({ error: "کاربر جاری پیدا نشد." }, 404);
+      }
+
+      const rooms = this.state.storage.sql
+        .exec(
+          `SELECT
+            room_id as roomId,
+            room_name as roomName,
+            role,
+            joined_at as joinedAt
+           FROM user_rooms
+           WHERE user_id = ?
+           ORDER BY joined_at DESC`,
+          user.id,
+        )
+        .toArray() as StoredUserRoom[];
+
+      return json({ rooms: rooms as UserRoom[] });
+    }
+
     return new Response("Not found", { status: 404 });
   }
 }
@@ -808,6 +896,39 @@ export default {
           content: body.content,
         }),
       });
+    }
+
+    if (request.method === "POST" && url.pathname === "/api/rooms/join") {
+      if (!payload) {
+        return json({ error: "Unauthorized" }, 401);
+      }
+
+      const body = (await request.json()) as {
+        roomId?: string;
+        roomName?: string;
+        role?: "creator" | "member";
+      };
+
+      return authStub.fetch("https://auth/rooms/join", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          username: payload.username,
+          roomId: body.roomId,
+          roomName: body.roomName,
+          role: body.role,
+        }),
+      });
+    }
+
+    if (request.method === "GET" && url.pathname === "/api/rooms") {
+      if (!payload) {
+        return json({ error: "Unauthorized" }, 401);
+      }
+
+      return authStub.fetch(
+        `https://auth/rooms?username=${encodeURIComponent(payload.username)}`,
+      );
     }
 
     return (

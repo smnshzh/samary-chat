@@ -85,6 +85,13 @@ export type ContactUser = {
   displayName: string;
 };
 
+export type UserRoom = {
+  roomId: string;
+  roomName: string;
+  role: "creator" | "member";
+  joinedAt: number;
+};
+
 export const names = [
   "Alice",
   "Bob",
