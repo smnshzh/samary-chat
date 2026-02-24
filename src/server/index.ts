@@ -178,7 +178,7 @@ export class Auth {
   }
 
   getUserByUsername(username: string) {
-    return this.state.storage.sql
+    const result = this.state.storage.sql
       .exec(
         `SELECT
           id,
@@ -190,11 +190,13 @@ export class Auth {
         WHERE username = ?`,
         username,
       )
-      .one() as UserRecord | null;
+      .toArray() as UserRecord[];
+
+    return result[0] ?? null;
   }
 
   getUserById(id: string) {
-    return this.state.storage.sql
+    const result = this.state.storage.sql
       .exec(
         `SELECT
           id,
@@ -206,7 +208,9 @@ export class Auth {
         WHERE id = ?`,
         id,
       )
-      .one() as UserRecord | null;
+      .toArray() as UserRecord[];
+
+    return result[0] ?? null;
   }
 
   async fetch(request: Request) {
