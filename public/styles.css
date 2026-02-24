@@ -31,6 +31,33 @@ html {
   margin-bottom: 12px;
 }
 
+.panel {
+  border: 1px solid #e0e0e0;
+  border-radius: 8px;
+  padding: 12px;
+  margin-bottom: 12px;
+}
+
+.call-actions {
+  display: flex;
+  gap: 8px;
+  margin-top: 8px;
+}
+
+.videos {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  gap: 8px;
+  margin-top: 10px;
+}
+
+.videos video {
+  width: 100%;
+  background: #111;
+  border-radius: 6px;
+  min-height: 160px;
+}
+
 #root {
   flex: 1;
   display: flex;
