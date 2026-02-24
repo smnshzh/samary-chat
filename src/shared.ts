@@ -5,6 +5,22 @@ export type ChatMessage = {
   role: "user" | "assistant";
 };
 
+export type DirectMessage = {
+  type: "direct-add";
+  id: string;
+  content: string;
+  fromUserId: string;
+  toUserId: string;
+  fromDisplayName: string;
+  createdAt: number;
+};
+
+export type PresenceMessage = {
+  type: "presence";
+  userId: string;
+  isOnline: boolean;
+};
+
 export type Message =
   | {
       type: "add";
@@ -30,7 +46,13 @@ export type Message =
       toUserId: string;
       signalType: "offer" | "answer" | "ice-candidate" | "call-end";
       payload: string;
-    };
+    }
+  | DirectMessage
+  | {
+      type: "direct-all";
+      messages: DirectMessage[];
+    }
+  | PresenceMessage;
 
 export type AuthUser = {
   id: string;

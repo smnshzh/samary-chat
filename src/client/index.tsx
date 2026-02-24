@@ -13,12 +13,13 @@ import { nanoid } from "nanoid";
 
 import {
   type AuthUser,
-  type ChatMessage,
   type ContactUser,
+  type DirectMessage,
   type Message,
 } from "../shared";
 
 const APP_LOGO_URL = "https://planning-marketer.storage.c2.liara.space/logo/logo.png";
+const DEFAULT_ROOM = "samary-global";
 
 type AuthResponse = {
   authenticated: boolean;
@@ -116,8 +117,10 @@ function LoginGate({ onAuthenticated }: { onAuthenticated: (user: AuthUser) => v
 }
 
 function ChatApp({ user, onUserUpdate }: { user: AuthUser; onUserUpdate: (user: AuthUser) => void }) {
-  const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [contacts, setContacts] = useState<ContactUser[]>([]);
+  const [directMessages, setDirectMessages] = useState<DirectMessage[]>([]);
+  const [onlineUsers, setOnlineUsers] = useState<Record<string, boolean>>({});
+  const [selectedContactId, setSelectedContactId] = useState<string | null>(null);
   const [contactIdInput, setContactIdInput] = useState("");
   const [profileName, setProfileName] = useState(user.displayName);
   const [profileBio, setProfileBio] = useState(user.bio);
@@ -139,26 +142,24 @@ function ChatApp({ user, onUserUpdate }: { user: AuthUser; onUserUpdate: (user: 
     room,
     onMessage: (evt) => {
       const message = JSON.parse(evt.data as string) as Message;
-      if (message.type === "add") {
-        setMessages((allMessages) => {
-          const foundIndex = allMessages.findIndex((m) => m.id === message.id);
-          if (foundIndex === -1) {
-            return [...allMessages, { ...message }];
+
+      if (message.type === "direct-all") {
+        setDirectMessages(message.messages);
+        return;
+      }
+
+      if (message.type === "direct-add") {
+        setDirectMessages((all) => {
+          if (all.some((item) => item.id === message.id)) {
+            return all;
           }
-          return allMessages.map((m) => (m.id === message.id ? { ...message } : m));
+          return [...all, message];
         });
         return;
       }
 
-      if (message.type === "update") {
-        setMessages((allMessages) =>
-          allMessages.map((item) => (item.id === message.id ? { ...message } : item)),
-        );
-        return;
-      }
-
-      if (message.type === "all") {
-        setMessages(message.messages);
+      if (message.type === "presence") {
+        setOnlineUsers((all) => ({ ...all, [message.userId]: message.isOnline }));
         return;
       }
 
@@ -168,11 +169,25 @@ function ChatApp({ user, onUserUpdate }: { user: AuthUser; onUserUpdate: (user: 
     },
   });
 
+
+  useEffect(() => {
+    socket.send(
+      JSON.stringify({
+        type: "presence",
+        userId: user.id,
+        isOnline: true,
+      } satisfies Message),
+    );
+  }, [socket, user.id]);
+
   const loadContacts = async () => {
     const response = await fetch("/api/users/contacts", { credentials: "include" });
     const data = (await response.json()) as { contacts?: ContactUser[]; error?: string };
     if (response.ok && data.contacts) {
       setContacts(data.contacts);
+      if (!selectedContactId && data.contacts[0]) {
+        setSelectedContactId(data.contacts[0].id);
+      }
     } else if (data.error) {
       setStatusMessage(data.error);
     }
@@ -278,12 +293,14 @@ function ChatApp({ user, onUserUpdate }: { user: AuthUser; onUserUpdate: (user: 
     }
   };
 
-  const startVideoCall = async () => {
-    if (!callTargetId.trim()) {
-      setStatusMessage("برای تماس تصویری، آیدی مقصد را وارد کنید.");
+  const startVideoCall = async (targetId?: string) => {
+    const destination = (targetId ?? callTargetId).trim();
+    if (!destination) {
+      setStatusMessage("یک مخاطب را برای تماس انتخاب کنید.");
       return;
     }
 
+    setCallTargetId(destination);
     const peer = createPeer();
     const stream = await ensureLocalStream();
     stream.getTracks().forEach((track) => peer.addTrack(track, stream));
@@ -295,7 +312,7 @@ function ChatApp({ user, onUserUpdate }: { user: AuthUser; onUserUpdate: (user: 
       JSON.stringify({
         type: "signal",
         fromUserId: user.id,
-        toUserId: callTargetId.trim(),
+        toUserId: destination,
         signalType: "offer",
         payload: JSON.stringify(offer),
       } satisfies Message),
@@ -305,6 +322,18 @@ function ChatApp({ user, onUserUpdate }: { user: AuthUser; onUserUpdate: (user: 
   };
 
   const endCall = () => {
+    if (callTargetId) {
+      socket.send(
+        JSON.stringify({
+          type: "signal",
+          fromUserId: user.id,
+          toUserId: callTargetId,
+          signalType: "call-end",
+          payload: "",
+        } satisfies Message),
+      );
+    }
+
     peerRef.current?.close();
     peerRef.current = null;
     localStreamRef.current?.getTracks().forEach((track) => track.stop());
@@ -318,13 +347,24 @@ function ChatApp({ user, onUserUpdate }: { user: AuthUser; onUserUpdate: (user: 
     setCallActive(false);
   };
 
+  const selectedContact = contacts.find((contact) => contact.id === selectedContactId) ?? null;
+
+  const currentChatMessages = directMessages.filter(
+    (message) =>
+      selectedContact &&
+      ((message.fromUserId === user.id && message.toUserId === selectedContact.id) ||
+        (message.fromUserId === selectedContact.id && message.toUserId === user.id)),
+  );
+
   return (
     <div className="chat-app">
       <aside className="sidebar glass-panel">
         <AppBrand />
         <div className="user-block">
           <div>وارد شده با: {user.username}</div>
-          <div>آیدی شما: <code>{user.id}</code></div>
+          <div>
+            آیدی شما: <code>{user.id}</code>
+          </div>
         </div>
 
         <div className="panel">
@@ -347,7 +387,12 @@ function ChatApp({ user, onUserUpdate }: { user: AuthUser; onUserUpdate: (user: 
               }
             }}
           >
-            <input value={profileName} onChange={(e) => setProfileName(e.target.value)} placeholder="نام نمایشی" required />
+            <input
+              value={profileName}
+              onChange={(e) => setProfileName(e.target.value)}
+              placeholder="نام نمایشی"
+              required
+            />
             <input value={profileBio} onChange={(e) => setProfileBio(e.target.value)} placeholder="بیو" />
             <button type="submit">ذخیره پروفایل</button>
           </form>
@@ -367,7 +412,7 @@ function ChatApp({ user, onUserUpdate }: { user: AuthUser; onUserUpdate: (user: 
               const data = (await response.json()) as { error?: string };
               if (response.ok) {
                 setContactIdInput("");
-                setStatusMessage("کاربر اضافه شد.");
+                setStatusMessage("کاربر اضافه شد. حالا می‌توانید چت و تماس بگیرید.");
                 await loadContacts();
               } else {
                 setStatusMessage(data.error ?? "افزودن کاربر ناموفق بود.");
@@ -384,11 +429,33 @@ function ChatApp({ user, onUserUpdate }: { user: AuthUser; onUserUpdate: (user: 
             <button type="submit">Add</button>
           </form>
           <ul className="contact-list">
-            {contacts.map((contact) => (
-              <li key={contact.id}>
-                {contact.displayName} ({contact.username})
-              </li>
-            ))}
+            {contacts.map((contact) => {
+              const isSelected = selectedContactId === contact.id;
+              const isOnline = Boolean(onlineUsers[contact.id]);
+              return (
+                <li key={contact.id} className={isSelected ? "active-contact" : ""}>
+                  <button
+                    type="button"
+                    className="contact-item"
+                    onClick={() => {
+                      setSelectedContactId(contact.id);
+                      setCallTargetId(contact.id);
+                    }}
+                  >
+                    <div>
+                      <div>{contact.displayName}</div>
+                      <small>@{contact.username}</small>
+                    </div>
+                    <span className={`online-pill ${isOnline ? "online" : "offline"}`}>
+                      {isOnline ? "آنلاین" : "آفلاین"}
+                    </span>
+                  </button>
+                  <button type="button" onClick={() => void startVideoCall(contact.id)}>
+                    تماس
+                  </button>
+                </li>
+              );
+            })}
           </ul>
         </div>
 
@@ -408,15 +475,27 @@ function ChatApp({ user, onUserUpdate }: { user: AuthUser; onUserUpdate: (user: 
 
       <main className="chat-main glass-panel">
         <div className="panel">
-          <h6>تماس تصویری خصوصی</h6>
-          <input
-            value={callTargetId}
-            onChange={(event) => setCallTargetId(event.target.value)}
-            placeholder="آیدی کاربر مقصد"
-          />
+          <h6>
+            {selectedContact
+              ? `گفتگو با ${selectedContact.displayName}`
+              : "یک مخاطب را برای شروع گفتگو انتخاب کنید"}
+          </h6>
+          {selectedContact ? (
+            <p className="status-line">
+              وضعیت: {onlineUsers[selectedContact.id] ? "آنلاین" : "آفلاین"}
+            </p>
+          ) : null}
+        </div>
+
+        <div className="panel">
+          <h6>تماس تصویری</h6>
           <div className="call-actions">
-            <button type="button" onClick={() => void startVideoCall()}>شروع تماس</button>
-            <button type="button" onClick={endCall}>قطع تماس</button>
+            <button type="button" disabled={!selectedContact} onClick={() => void startVideoCall()}>
+              شروع تماس با مخاطب انتخابی
+            </button>
+            <button type="button" onClick={endCall}>
+              قطع تماس
+            </button>
           </div>
           {incomingCallFrom ? <p>تماس ورودی از: {incomingCallFrom}</p> : null}
           <div className="videos">
@@ -429,9 +508,12 @@ function ChatApp({ user, onUserUpdate }: { user: AuthUser; onUserUpdate: (user: 
         {statusMessage ? <p className="status-line">{statusMessage}</p> : null}
 
         <section className="messages-shell">
-          {messages.map((message) => (
-            <div key={message.id} className={`message-bubble ${message.user === user.displayName ? "self" : "other"}`}>
-              <div className="message-user">{message.user}</div>
+          {currentChatMessages.map((message) => (
+            <div
+              key={message.id}
+              className={`message-bubble ${message.fromUserId === user.id ? "self" : "other"}`}
+            >
+              <div className="message-user">{message.fromDisplayName}</div>
               <div>{message.content}</div>
             </div>
           ))}
@@ -441,25 +523,28 @@ function ChatApp({ user, onUserUpdate }: { user: AuthUser; onUserUpdate: (user: 
           className="compose-row"
           onSubmit={(e) => {
             e.preventDefault();
+            if (!selectedContact) {
+              setStatusMessage("ابتدا یک مخاطب انتخاب کنید.");
+              return;
+            }
+
             const content = e.currentTarget.elements.namedItem("content") as HTMLInputElement;
             if (!content.value.trim()) {
               return;
             }
 
-            const chatMessage: ChatMessage = {
-              id: nanoid(8),
-              content: content.value,
-              user: user.displayName,
-              role: "user",
+            const chatMessage: DirectMessage = {
+              type: "direct-add",
+              id: nanoid(10),
+              content: content.value.trim(),
+              fromUserId: user.id,
+              toUserId: selectedContact.id,
+              fromDisplayName: user.displayName,
+              createdAt: Date.now(),
             };
-            setMessages((allMessages) => [...allMessages, chatMessage]);
 
-            socket.send(
-              JSON.stringify({
-                type: "add",
-                ...chatMessage,
-              } satisfies Message),
-            );
+            setDirectMessages((allMessages) => [...allMessages, chatMessage]);
+            socket.send(JSON.stringify(chatMessage satisfies Message));
 
             content.value = "";
           }}
@@ -468,10 +553,15 @@ function ChatApp({ user, onUserUpdate }: { user: AuthUser; onUserUpdate: (user: 
             type="text"
             name="content"
             className="my-input-text"
-            placeholder={`سلام ${user.displayName}! پیام خود را بنویس...`}
+            placeholder={
+              selectedContact
+                ? `پیام به ${selectedContact.displayName}`
+                : "یک مخاطب را برای ارسال پیام انتخاب کنید"
+            }
             autoComplete="off"
+            disabled={!selectedContact}
           />
-          <button type="submit" className="send-message button-primary">
+          <button type="submit" className="send-message button-primary" disabled={!selectedContact}>
             ارسال
           </button>
         </form>
@@ -527,7 +617,7 @@ function App() {
 }
 
 function AppRoutes() {
-  const generatedRoom = useMemo(() => nanoid(), []);
+  const generatedRoom = useMemo(() => DEFAULT_ROOM, []);
 
   return (
     <Routes>

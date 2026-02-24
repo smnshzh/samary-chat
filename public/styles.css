@@ -133,6 +133,34 @@ body {
   background: rgba(255, 255, 255, 0.05);
 }
 
+.contact-list li.active-contact {
+  outline: 1px solid rgba(140, 167, 255, 0.8);
+}
+
+.contact-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin-bottom: 6px;
+}
+
+.online-pill {
+  font-size: 12px;
+  padding: 4px 8px;
+  border-radius: 999px;
+}
+
+.online-pill.online {
+  background: rgba(45, 212, 150, 0.18);
+  color: #81ffd7;
+}
+
+.online-pill.offline {
+  background: rgba(255, 255, 255, 0.09);
+  color: #cfd9ff;
+}
+
 .messages-shell {
   display: flex;
   flex-direction: column;
