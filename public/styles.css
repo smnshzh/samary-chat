@@ -51,6 +51,9 @@ body {
 .user-block { padding: 12px; margin-bottom: 12px; border-radius: 12px; background: #202c33; line-height: 1.8; }
 .panel { border: 1px solid #2a3942; border-radius: 12px; padding: 10px; margin-bottom: 12px; }
 .room-panel { display: grid; gap: 8px; }
+.room-list { list-style: none; margin: 0; padding: 0; display: grid; gap: 6px; }
+.room-list li button { display: flex; justify-content: space-between; align-items: center; gap: 8px; }
+.room-list li small { opacity: 0.75; }
 .header-panel { display: flex; justify-content: space-between; align-items: center; background: #202c33; }
 
 .contact-list { list-style: none; padding: 0; margin: 10px 0 0; display: grid; gap: 8px; }

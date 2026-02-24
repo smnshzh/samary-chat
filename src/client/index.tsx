@@ -17,6 +17,7 @@ import {
   type DirectMessage,
   type Message,
   type RoomInviteMessage,
+  type UserRoom,
 } from "../shared";
 
 const APP_LOGO_URL = "https://planning-marketer.storage.c2.liara.space/logo/logo.png";
@@ -121,6 +122,7 @@ function ChatApp({ user, onUserUpdate }: { user: AuthUser; onUserUpdate: (user: 
   const [contacts, setContacts] = useState<ContactUser[]>([]);
   const [directMessages, setDirectMessages] = useState<DirectMessage[]>([]);
   const [roomInvites, setRoomInvites] = useState<RoomInviteMessage[]>([]);
+  const [userRooms, setUserRooms] = useState<UserRoom[]>([]);
   const [onlineUsers, setOnlineUsers] = useState<Record<string, boolean>>({});
   const [selectedContactId, setSelectedContactId] = useState<string | null>(null);
   const [contactIdInput, setContactIdInput] = useState("");
@@ -232,11 +234,44 @@ function ChatApp({ user, onUserUpdate }: { user: AuthUser; onUserUpdate: (user: 
     }
   };
 
+  const loadUserRooms = async () => {
+    const response = await fetch("/api/rooms", { credentials: "include" });
+    const data = (await response.json()) as { rooms?: UserRoom[]; error?: string };
+    if (response.ok && data.rooms) {
+      setUserRooms(data.rooms);
+    } else if (data.error) {
+      setStatusMessage(data.error);
+    }
+  };
+
+  const saveRoomMembership = async (roomId: string, role: "creator" | "member") => {
+    const response = await fetch("/api/rooms/join", {
+      method: "POST",
+      credentials: "include",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ roomId, roomName: roomId, role }),
+    });
+
+    if (!response.ok) {
+      const data = (await response.json()) as { error?: string };
+      setStatusMessage(data.error ?? "ثبت عضویت اتاق ناموفق بود.");
+      return;
+    }
+
+    await loadUserRooms();
+  };
+
   useEffect(() => {
     void loadContacts();
     void loadDirectMessages();
+    void loadUserRooms();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  useEffect(() => {
+    void saveRoomMembership(room, "member");
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [room]);
 
   const createPeer = () => {
     const peer = new RTCPeerConnection({
@@ -428,8 +463,11 @@ function ChatApp({ user, onUserUpdate }: { user: AuthUser; onUserUpdate: (user: 
       return;
     }
     const nextRoom = `${roomName.trim().replace(/\s+/g, "-")}-${nanoid(5)}`.toLowerCase();
-    navigate(`/${nextRoom}`);
-    setStatusMessage(`اتاق «${roomName}» ساخته شد.`);
+    void (async () => {
+      await saveRoomMembership(nextRoom, "creator");
+      navigate(`/${nextRoom}`);
+      setStatusMessage(`اتاق «${roomName}» ساخته شد.`);
+    })();
   };
 
   const inviteContactToCurrentRoom = (contact: ContactUser) => {
@@ -463,6 +501,18 @@ function ChatApp({ user, onUserUpdate }: { user: AuthUser; onUserUpdate: (user: 
           <button type="button" onClick={() => navigator.clipboard.writeText(window.location.href)}>
             کپی لینک دعوت
           </button>
+          {userRooms.length > 0 ? (
+            <ul className="room-list">
+              {userRooms.map((item) => (
+                <li key={item.roomId}>
+                  <button type="button" onClick={() => navigate(`/${item.roomId}`)}>
+                    <span>{item.roomName}</span>
+                    <small>{item.role === "creator" ? "سازنده" : "عضو"}</small>
+                  </button>
+                </li>
+              ))}
+            </ul>
+          ) : null}
         </div>
 
         <div className="panel">
@@ -605,7 +655,17 @@ function ChatApp({ user, onUserUpdate }: { user: AuthUser; onUserUpdate: (user: 
             {roomInvites.map((invite) => (
               <div className="invite-item" key={invite.id}>
                 <span>{invite.fromDisplayName} شما را به {invite.roomName} دعوت کرد.</span>
-                <button type="button" onClick={() => navigate(`/${invite.roomId}`)}>ورود به اتاق</button>
+                <button
+                  type="button"
+                  onClick={() => {
+                    void (async () => {
+                      await saveRoomMembership(invite.roomId, "member");
+                      navigate(`/${invite.roomId}`);
+                    })();
+                  }}
+                >
+                  ورود به اتاق
+                </button>
               </div>
             ))}
           </div>
