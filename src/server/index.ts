@@ -143,6 +143,29 @@ export class Auth {
         PRIMARY KEY (owner_id, contact_id)
       )`,
     );
+
+    this.ensureUsersSchema();
+  }
+
+  ensureUsersSchema() {
+    const columns = this.state.storage.sql
+      .exec("PRAGMA table_info(users)")
+      .toArray() as Array<{ name: string }>;
+
+    const hasDisplayName = columns.some((column) => column.name === "display_name");
+    if (!hasDisplayName) {
+      this.state.storage.sql.exec(
+        `ALTER TABLE users ADD COLUMN display_name TEXT NOT NULL DEFAULT ''`,
+      );
+      this.state.storage.sql.exec(
+        `UPDATE users SET display_name = username WHERE display_name = ''`,
+      );
+    }
+
+    const hasBio = columns.some((column) => column.name === "bio");
+    if (!hasBio) {
+      this.state.storage.sql.exec(`ALTER TABLE users ADD COLUMN bio TEXT NOT NULL DEFAULT ''`);
+    }
   }
 
   toAuthUser(user: UserRecord): AuthUser {
