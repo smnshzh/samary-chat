@@ -6,6 +6,10 @@
     {
       "new_sqlite_classes": ["Chat"],
       "tag": "v1"
+    },
+    {
+      "new_sqlite_classes": ["Auth"],
+      "tag": "v2"
     }
   ],
   "assets": {
@@ -21,8 +25,15 @@
       {
         "class_name": "Chat",
         "name": "Chat"
+      },
+      {
+        "class_name": "Auth",
+        "name": "Auth"
       }
     ]
+  },
+  "vars": {
+    "AUTH_SECRET": "replace-this-in-production"
   },
   "observability": {
     "enabled": true

@@ -36,3 +36,14 @@ A live public deployment of this template is available at [https://durable-chat-
    ```bash
    npx wrangler deploy
    ```
+
+## Authentication
+
+This project now includes username/password authentication with secure HTTP-only session cookies:
+
+- `POST /api/auth/register`
+- `POST /api/auth/login`
+- `POST /api/auth/logout`
+- `GET /api/auth/me`
+
+Set a strong value for `AUTH_SECRET` in `wrangler.json` (or by using Wrangler secrets/vars per environment) before deploying.
