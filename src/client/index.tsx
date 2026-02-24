@@ -16,6 +16,7 @@ import {
   type ContactUser,
   type DirectMessage,
   type Message,
+  type RoomInviteMessage,
 } from "../shared";
 
 const APP_LOGO_URL = "https://planning-marketer.storage.c2.liara.space/logo/logo.png";
@@ -31,7 +32,7 @@ function AppBrand() {
     <div className="app-brand">
       <img src={APP_LOGO_URL} alt="Samary Chat" className="app-logo" />
       <div>
-        <p className="brand-kicker">Private Chat</p>
+        <p className="brand-kicker">Smart Collaboration</p>
         <h4>Samary Chat</h4>
       </div>
     </div>
@@ -80,7 +81,7 @@ function LoginGate({ onAuthenticated }: { onAuthenticated: (user: AuthUser) => v
     <div className="auth-shell">
       <div className="auth container glass-panel">
         <AppBrand />
-        <p className="muted">ارتباط امن و خصوصی با دوستانت در یک محیط مدرن.</p>
+        <p className="muted">پیام‌رسانی مدرن با رابط بهتر، اتاق‌های خصوصی و دعوت اعضا.</p>
         <h5>{mode === "login" ? "ورود" : "ثبت‌نام"}</h5>
         <form onSubmit={submit}>
           <input
@@ -119,6 +120,7 @@ function LoginGate({ onAuthenticated }: { onAuthenticated: (user: AuthUser) => v
 function ChatApp({ user, onUserUpdate }: { user: AuthUser; onUserUpdate: (user: AuthUser) => void }) {
   const [contacts, setContacts] = useState<ContactUser[]>([]);
   const [directMessages, setDirectMessages] = useState<DirectMessage[]>([]);
+  const [roomInvites, setRoomInvites] = useState<RoomInviteMessage[]>([]);
   const [onlineUsers, setOnlineUsers] = useState<Record<string, boolean>>({});
   const [selectedContactId, setSelectedContactId] = useState<string | null>(null);
   const [contactIdInput, setContactIdInput] = useState("");
@@ -134,7 +136,7 @@ function ChatApp({ user, onUserUpdate }: { user: AuthUser; onUserUpdate: (user: 
   const localStreamRef = useRef<MediaStream | null>(null);
   const peerRef = useRef<RTCPeerConnection | null>(null);
 
-  const { room } = useParams();
+  const { room = DEFAULT_ROOM } = useParams();
   const navigate = useNavigate();
 
   const socket = usePartySocket({
@@ -158,6 +160,16 @@ function ChatApp({ user, onUserUpdate }: { user: AuthUser; onUserUpdate: (user: 
         return;
       }
 
+      if (message.type === "room-invite" && message.toUserId === user.id) {
+        setRoomInvites((all) => {
+          if (all.some((invite) => invite.id === message.id)) {
+            return all;
+          }
+          return [message, ...all].slice(0, 8);
+        });
+        return;
+      }
+
       if (message.type === "presence") {
         setOnlineUsers((all) => ({ ...all, [message.userId]: message.isOnline }));
         return;
@@ -168,7 +180,6 @@ function ChatApp({ user, onUserUpdate }: { user: AuthUser; onUserUpdate: (user: 
       }
     },
   });
-
 
   useEffect(() => {
     socket.send(
@@ -195,6 +206,7 @@ function ChatApp({ user, onUserUpdate }: { user: AuthUser; onUserUpdate: (user: 
 
   useEffect(() => {
     void loadContacts();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   const createPeer = () => {
@@ -356,15 +368,47 @@ function ChatApp({ user, onUserUpdate }: { user: AuthUser; onUserUpdate: (user: 
         (message.fromUserId === selectedContact.id && message.toUserId === user.id)),
   );
 
+  const createRoom = () => {
+    const roomName = window.prompt("نام اتاق جدید را وارد کنید:", "اتاق تیمی");
+    if (!roomName?.trim()) {
+      return;
+    }
+    const nextRoom = `${roomName.trim().replace(/\s+/g, "-")}-${nanoid(5)}`.toLowerCase();
+    navigate(`/${nextRoom}`);
+    setStatusMessage(`اتاق «${roomName}» ساخته شد.`);
+  };
+
+  const inviteContactToCurrentRoom = (contact: ContactUser) => {
+    const invite: RoomInviteMessage = {
+      type: "room-invite",
+      id: nanoid(10),
+      roomId: room,
+      roomName: room,
+      fromUserId: user.id,
+      fromDisplayName: user.displayName,
+      toUserId: contact.id,
+      createdAt: Date.now(),
+    };
+    socket.send(JSON.stringify(invite satisfies Message));
+    setStatusMessage(`دعوت‌نامه برای ${contact.displayName} ارسال شد.`);
+  };
+
   return (
     <div className="chat-app">
       <aside className="sidebar glass-panel">
         <AppBrand />
         <div className="user-block">
-          <div>وارد شده با: {user.username}</div>
-          <div>
-            آیدی شما: <code>{user.id}</code>
-          </div>
+          <div>اکانت: <strong>{user.username}</strong></div>
+          <div className="muted">اتاق فعلی: <code>{room}</code></div>
+          <div className="muted">آیدی شما: <code>{user.id}</code></div>
+        </div>
+
+        <div className="panel room-panel">
+          <h6>مدیریت اتاق</h6>
+          <button type="button" className="button-primary" onClick={createRoom}>ساخت اتاق جدید</button>
+          <button type="button" onClick={() => navigator.clipboard.writeText(window.location.href)}>
+            کپی لینک دعوت
+          </button>
         </div>
 
         <div className="panel">
@@ -412,7 +456,7 @@ function ChatApp({ user, onUserUpdate }: { user: AuthUser; onUserUpdate: (user: 
               const data = (await response.json()) as { error?: string };
               if (response.ok) {
                 setContactIdInput("");
-                setStatusMessage("کاربر اضافه شد. حالا می‌توانید چت و تماس بگیرید.");
+                setStatusMessage("کاربر اضافه شد.");
                 await loadContacts();
               } else {
                 setStatusMessage(data.error ?? "افزودن کاربر ناموفق بود.");
@@ -426,7 +470,7 @@ function ChatApp({ user, onUserUpdate }: { user: AuthUser; onUserUpdate: (user: 
               placeholder="User ID"
               required
             />
-            <button type="submit">Add</button>
+            <button type="submit">افزودن</button>
           </form>
           <ul className="contact-list">
             {contacts.map((contact) => {
@@ -450,9 +494,10 @@ function ChatApp({ user, onUserUpdate }: { user: AuthUser; onUserUpdate: (user: 
                       {isOnline ? "آنلاین" : "آفلاین"}
                     </span>
                   </button>
-                  <button type="button" onClick={() => void startVideoCall(contact.id)}>
-                    تماس
-                  </button>
+                  <div className="contact-actions">
+                    <button type="button" onClick={() => void startVideoCall(contact.id)}>تماس</button>
+                    <button type="button" onClick={() => inviteContactToCurrentRoom(contact)}>دعوت به اتاق</button>
+                  </div>
                 </li>
               );
             })}
@@ -474,7 +519,7 @@ function ChatApp({ user, onUserUpdate }: { user: AuthUser; onUserUpdate: (user: 
       </aside>
 
       <main className="chat-main glass-panel">
-        <div className="panel">
+        <div className="panel header-panel">
           <h6>
             {selectedContact
               ? `گفتگو با ${selectedContact.displayName}`
@@ -487,11 +532,23 @@ function ChatApp({ user, onUserUpdate }: { user: AuthUser; onUserUpdate: (user: 
           ) : null}
         </div>
 
+        {roomInvites.length > 0 ? (
+          <div className="panel invite-panel">
+            <h6>دعوت‌نامه‌های دریافتی</h6>
+            {roomInvites.map((invite) => (
+              <div className="invite-item" key={invite.id}>
+                <span>{invite.fromDisplayName} شما را به {invite.roomName} دعوت کرد.</span>
+                <button type="button" onClick={() => navigate(`/${invite.roomId}`)}>ورود به اتاق</button>
+              </div>
+            ))}
+          </div>
+        ) : null}
+
         <div className="panel">
           <h6>تماس تصویری</h6>
           <div className="call-actions">
             <button type="button" disabled={!selectedContact} onClick={() => void startVideoCall()}>
-              شروع تماس با مخاطب انتخابی
+              شروع تماس
             </button>
             <button type="button" onClick={endCall}>
               قطع تماس
@@ -552,7 +609,6 @@ function ChatApp({ user, onUserUpdate }: { user: AuthUser; onUserUpdate: (user: 
           <input
             type="text"
             name="content"
-            className="my-input-text"
             placeholder={
               selectedContact
                 ? `پیام به ${selectedContact.displayName}`
