@@ -36,3 +36,16 @@ A live public deployment of this template is available at [https://durable-chat-
    ```bash
    npx wrangler deploy
    ```
+
+## Authentication (Optional)
+
+You can protect the whole chat app (including WebSocket connections) with HTTP Basic Authentication.
+
+1. Set credentials as Worker secrets:
+   ```bash
+   npx wrangler secret put AUTH_USERNAME
+   npx wrangler secret put AUTH_PASSWORD
+   ```
+2. Redeploy the Worker.
+
+When both `AUTH_USERNAME` and `AUTH_PASSWORD` are set, every request requires login. If either value is missing, authentication is disabled.

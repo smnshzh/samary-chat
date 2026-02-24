@@ -79,9 +79,45 @@ export class Chat extends Server<Env> {
 
 export default {
   async fetch(request, env) {
+    const username = (env as Env & { AUTH_USERNAME?: string }).AUTH_USERNAME;
+    const password = (env as Env & { AUTH_PASSWORD?: string }).AUTH_PASSWORD;
+
+    if (username && password && !isAuthenticated(request, username, password)) {
+      return new Response("Authentication required", {
+        status: 401,
+        headers: {
+          "WWW-Authenticate": 'Basic realm="Durable Chat"',
+        },
+      });
+    }
+
     return (
       (await routePartykitRequest(request, { ...env })) ||
       env.ASSETS.fetch(request)
     );
   },
 } satisfies ExportedHandler<Env>;
+
+function isAuthenticated(
+  request: Request,
+  expectedUsername: string,
+  expectedPassword: string,
+) {
+  const authHeader = request.headers.get("Authorization");
+  if (!authHeader || !authHeader.startsWith("Basic ")) {
+    return false;
+  }
+
+  const encodedCredentials = authHeader.slice("Basic ".length).trim();
+  const decodedCredentials = atob(encodedCredentials);
+  const separatorIndex = decodedCredentials.indexOf(":");
+
+  if (separatorIndex === -1) {
+    return false;
+  }
+
+  const username = decodedCredentials.slice(0, separatorIndex);
+  const password = decodedCredentials.slice(separatorIndex + 1);
+
+  return username === expectedUsername && password === expectedPassword;
+}
