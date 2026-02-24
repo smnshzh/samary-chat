@@ -21,6 +21,17 @@ export type PresenceMessage = {
   isOnline: boolean;
 };
 
+export type RoomInviteMessage = {
+  type: "room-invite";
+  id: string;
+  roomId: string;
+  roomName: string;
+  fromUserId: string;
+  fromDisplayName: string;
+  toUserId: string;
+  createdAt: number;
+};
+
 export type Message =
   | {
       type: "add";
@@ -52,7 +63,8 @@ export type Message =
       type: "direct-all";
       messages: DirectMessage[];
     }
-  | PresenceMessage;
+  | PresenceMessage
+  | RoomInviteMessage;
 
 export type AuthUser = {
   id: string;
