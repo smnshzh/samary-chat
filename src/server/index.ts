@@ -5,7 +5,13 @@ import {
   routePartykitRequest,
 } from "partyserver";
 
-import type { AuthUser, ChatMessage, ContactUser, Message } from "../shared";
+import type {
+  AuthUser,
+  ChatMessage,
+  ContactUser,
+  DirectMessage,
+  Message,
+} from "../shared";
 
 type UserRecord = {
   id: string;
@@ -400,6 +406,9 @@ export class Chat extends Server<Env> {
   static options = { hibernate: true };
 
   messages = [] as ChatMessage[];
+  directMessages = [] as DirectMessage[];
+  onlineUsers = new Set<string>();
+  connectionUsers = new Map<string, string>();
 
   onStart() {
     this.ctx.storage.sql.exec(
@@ -409,6 +418,31 @@ export class Chat extends Server<Env> {
     this.messages = this.ctx.storage.sql
       .exec(`SELECT * FROM messages`)
       .toArray() as ChatMessage[];
+
+    this.ctx.storage.sql.exec(
+      `CREATE TABLE IF NOT EXISTS direct_messages (
+        id TEXT PRIMARY KEY,
+        content TEXT NOT NULL,
+        from_user_id TEXT NOT NULL,
+        to_user_id TEXT NOT NULL,
+        from_display_name TEXT NOT NULL,
+        created_at INTEGER NOT NULL
+      )`,
+    );
+
+    this.directMessages = this.ctx.storage.sql
+      .exec(
+        `SELECT
+          id,
+          content,
+          from_user_id as fromUserId,
+          to_user_id as toUserId,
+          from_display_name as fromDisplayName,
+          created_at as createdAt
+         FROM direct_messages
+         ORDER BY created_at ASC`,
+      )
+      .toArray() as DirectMessage[];
   }
 
   onConnect(connection: Connection) {
@@ -418,6 +452,43 @@ export class Chat extends Server<Env> {
         messages: this.messages,
       } satisfies Message),
     );
+
+    connection.send(
+      JSON.stringify({
+        type: "direct-all",
+        messages: this.directMessages,
+      } satisfies Message),
+    );
+
+    this.onlineUsers.forEach((userId) => {
+      connection.send(
+        JSON.stringify({
+          type: "presence",
+          userId,
+          isOnline: true,
+        } satisfies Message),
+      );
+    });
+  }
+
+  onClose(connection: Connection) {
+    const userId = this.connectionUsers.get(connection.id);
+    if (!userId) {
+      return;
+    }
+
+    this.connectionUsers.delete(connection.id);
+    const stillOnline = [...this.connectionUsers.values()].some((id) => id === userId);
+    if (!stillOnline) {
+      this.onlineUsers.delete(userId);
+      this.broadcast(
+        JSON.stringify({
+          type: "presence",
+          userId,
+          isOnline: false,
+        } satisfies Message),
+      );
+    }
   }
 
   saveMessage(message: ChatMessage) {
@@ -439,12 +510,54 @@ export class Chat extends Server<Env> {
     );
   }
 
-  onMessage(_connection: Connection, message: WSMessage) {
+  saveDirectMessage(message: DirectMessage) {
+    this.directMessages.push(message);
+    this.ctx.storage.sql.exec(
+      `INSERT INTO direct_messages (id, content, from_user_id, to_user_id, from_display_name, created_at)
+       VALUES (?, ?, ?, ?, ?, ?)`,
+      message.id,
+      message.content,
+      message.fromUserId,
+      message.toUserId,
+      message.fromDisplayName,
+      message.createdAt,
+    );
+  }
+
+  updatePresence(connection: Connection, userId: string, isOnline: boolean) {
+    if (!isOnline) {
+      return;
+    }
+
+    this.connectionUsers.set(connection.id, userId);
+    if (!this.onlineUsers.has(userId)) {
+      this.onlineUsers.add(userId);
+      this.broadcast(
+        JSON.stringify({
+          type: "presence",
+          userId,
+          isOnline: true,
+        } satisfies Message),
+      );
+    }
+  }
+
+  onMessage(connection: Connection, message: WSMessage) {
     this.broadcast(message);
 
     const parsed = JSON.parse(message as string) as Message;
     if (parsed.type === "add" || parsed.type === "update") {
       this.saveMessage(parsed);
+      return;
+    }
+
+    if (parsed.type === "direct-add") {
+      this.saveDirectMessage(parsed);
+      return;
+    }
+
+    if (parsed.type === "presence") {
+      this.updatePresence(connection, parsed.userId, parsed.isOnline);
     }
   }
 }
