@@ -64,6 +64,12 @@ export type Message =
       messages: DirectMessage[];
     }
   | PresenceMessage
+  | {
+      type: "typing";
+      fromUserId: string;
+      toUserId: string;
+      isTyping: boolean;
+    }
   | RoomInviteMessage;
 
 export type AuthUser = {
