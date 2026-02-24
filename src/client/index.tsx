@@ -22,6 +22,9 @@ import {
 
 const APP_LOGO_URL = "https://planning-marketer.storage.c2.liara.space/logo/logo.png";
 const DEFAULT_ROOM = "samary-global";
+const THEME_STORAGE_KEY = "samary-chat-theme";
+
+type AppTheme = "ocean" | "sunset" | "forest" | "midnight";
 
 type AuthResponse = {
   authenticated: boolean;
@@ -118,7 +121,17 @@ function LoginGate({ onAuthenticated }: { onAuthenticated: (user: AuthUser) => v
   );
 }
 
-function ChatApp({ user, onUserUpdate }: { user: AuthUser; onUserUpdate: (user: AuthUser) => void }) {
+function ChatApp({
+  user,
+  onUserUpdate,
+  theme,
+  onThemeChange,
+}: {
+  user: AuthUser;
+  onUserUpdate: (user: AuthUser) => void;
+  theme: AppTheme;
+  onThemeChange: (theme: AppTheme) => void;
+}) {
   const [contacts, setContacts] = useState<ContactUser[]>([]);
   const [directMessages, setDirectMessages] = useState<DirectMessage[]>([]);
   const [roomInvites, setRoomInvites] = useState<RoomInviteMessage[]>([]);
@@ -530,6 +543,20 @@ function ChatApp({ user, onUserUpdate }: { user: AuthUser; onUserUpdate: (user: 
           <div className="muted">آیدی شما: <code>{user.id}</code></div>
         </div>
 
+        <div className="panel">
+          <h6>تم رابط کاربری</h6>
+          <select
+            value={theme}
+            onChange={(event) => onThemeChange(event.target.value as AppTheme)}
+            className="theme-select"
+          >
+            <option value="ocean">اقیانوسی (پیش‌فرض)</option>
+            <option value="sunset">غروب</option>
+            <option value="forest">جنگلی</option>
+            <option value="midnight">نیمه‌شب</option>
+          </select>
+        </div>
+
         <div className="panel room-panel">
           <h6>مدیریت اتاق</h6>
           <button type="button" className="button-primary" onClick={createRoom}>ساخت اتاق جدید</button>
@@ -938,6 +965,19 @@ function App() {
     "loading",
   );
   const [user, setUser] = useState<AuthUser | null>(null);
+  const [theme, setTheme] = useState<AppTheme>("ocean");
+
+  useEffect(() => {
+    const storedTheme = localStorage.getItem(THEME_STORAGE_KEY) as AppTheme | null;
+    if (storedTheme) {
+      setTheme(storedTheme);
+    }
+  }, []);
+
+  useEffect(() => {
+    document.documentElement.dataset.theme = theme;
+    localStorage.setItem(THEME_STORAGE_KEY, theme);
+  }, [theme]);
 
   useEffect(() => {
     const loadAuth = async () => {
@@ -976,7 +1016,7 @@ function App() {
     return null;
   }
 
-  return <ChatApp user={user} onUserUpdate={setUser} />;
+  return <ChatApp user={user} onUserUpdate={setUser} theme={theme} onThemeChange={setTheme} />;
 }
 
 function AppRoutes() {
