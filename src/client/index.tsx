@@ -130,6 +130,8 @@ function ChatApp({ user, onUserUpdate }: { user: AuthUser; onUserUpdate: (user: 
   const [callTargetId, setCallTargetId] = useState("");
   const [callActive, setCallActive] = useState(false);
   const [incomingCallFrom, setIncomingCallFrom] = useState<string | null>(null);
+  const [contactSearch, setContactSearch] = useState("");
+  const [typingByUser, setTypingByUser] = useState<Record<string, boolean>>({});
 
   const localVideoRef = useRef<HTMLVideoElement>(null);
   const remoteVideoRef = useRef<HTMLVideoElement>(null);
@@ -177,6 +179,11 @@ function ChatApp({ user, onUserUpdate }: { user: AuthUser; onUserUpdate: (user: 
 
       if (message.type === "signal" && message.toUserId === user.id) {
         void handleSignal(message);
+        return;
+      }
+
+      if (message.type === "typing" && message.toUserId === user.id) {
+        setTypingByUser((all) => ({ ...all, [message.fromUserId]: message.isTyping }));
       }
     },
   });
@@ -361,12 +368,37 @@ function ChatApp({ user, onUserUpdate }: { user: AuthUser; onUserUpdate: (user: 
 
   const selectedContact = contacts.find((contact) => contact.id === selectedContactId) ?? null;
 
+  const filteredContacts = contacts.filter((contact) => {
+    const query = contactSearch.trim().toLowerCase();
+    if (!query) {
+      return true;
+    }
+    return (
+      contact.displayName.toLowerCase().includes(query) ||
+      contact.username.toLowerCase().includes(query) ||
+      contact.id.toLowerCase().includes(query)
+    );
+  });
+
   const currentChatMessages = directMessages.filter(
     (message) =>
       selectedContact &&
       ((message.fromUserId === user.id && message.toUserId === selectedContact.id) ||
         (message.fromUserId === selectedContact.id && message.toUserId === user.id)),
   );
+
+  const sidebarConversations = filteredContacts
+    .map((contact) => {
+      const threadMessages = directMessages
+        .filter(
+          (message) =>
+            (message.fromUserId === user.id && message.toUserId === contact.id) ||
+            (message.fromUserId === contact.id && message.toUserId === user.id),
+        )
+        .sort((a, b) => b.createdAt - a.createdAt);
+      return { contact, latestMessage: threadMessages[0] ?? null };
+    })
+    .sort((a, b) => (b.latestMessage?.createdAt ?? 0) - (a.latestMessage?.createdAt ?? 0));
 
   const createRoom = () => {
     const roomName = window.prompt("نام اتاق جدید را وارد کنید:", "اتاق تیمی");
@@ -443,7 +475,13 @@ function ChatApp({ user, onUserUpdate }: { user: AuthUser; onUserUpdate: (user: 
         </div>
 
         <div className="panel">
-          <h6>افزودن مخاطب</h6>
+          <h6>چت‌ها</h6>
+          <input
+            type="text"
+            value={contactSearch}
+            onChange={(event) => setContactSearch(event.target.value)}
+            placeholder="جستجو در مخاطب‌ها"
+          />
           <form
             onSubmit={async (event) => {
               event.preventDefault();
@@ -473,7 +511,7 @@ function ChatApp({ user, onUserUpdate }: { user: AuthUser; onUserUpdate: (user: 
             <button type="submit">افزودن</button>
           </form>
           <ul className="contact-list">
-            {contacts.map((contact) => {
+            {sidebarConversations.map(({ contact, latestMessage }) => {
               const isSelected = selectedContactId === contact.id;
               const isOnline = Boolean(onlineUsers[contact.id]);
               return (
@@ -488,11 +526,16 @@ function ChatApp({ user, onUserUpdate }: { user: AuthUser; onUserUpdate: (user: 
                   >
                     <div>
                       <div>{contact.displayName}</div>
-                      <small>@{contact.username}</small>
+                      <small>
+                        {latestMessage?.content ?? `@${contact.username}`}
+                      </small>
                     </div>
-                    <span className={`online-pill ${isOnline ? "online" : "offline"}`}>
-                      {isOnline ? "آنلاین" : "آفلاین"}
-                    </span>
+                    <div className="chat-meta">
+                      <small>{latestMessage ? new Date(latestMessage.createdAt).toLocaleTimeString("fa-IR", { hour: "2-digit", minute: "2-digit" }) : ""}</small>
+                      <span className={`online-pill ${isOnline ? "online" : "offline"}`}>
+                        {isOnline ? "آنلاین" : "آفلاین"}
+                      </span>
+                    </div>
                   </button>
                   <div className="contact-actions">
                     <button type="button" onClick={() => void startVideoCall(contact.id)}>تماس</button>
@@ -522,12 +565,14 @@ function ChatApp({ user, onUserUpdate }: { user: AuthUser; onUserUpdate: (user: 
         <div className="panel header-panel">
           <h6>
             {selectedContact
-              ? `گفتگو با ${selectedContact.displayName}`
+              ? `${selectedContact.displayName}`
               : "یک مخاطب را برای شروع گفتگو انتخاب کنید"}
           </h6>
           {selectedContact ? (
             <p className="status-line">
-              وضعیت: {onlineUsers[selectedContact.id] ? "آنلاین" : "آفلاین"}
+              {typingByUser[selectedContact.id]
+                ? "در حال تایپ..."
+                : `وضعیت: ${onlineUsers[selectedContact.id] ? "آنلاین" : "آفلاین"}`}
             </p>
           ) : null}
         </div>
@@ -570,8 +615,11 @@ function ChatApp({ user, onUserUpdate }: { user: AuthUser; onUserUpdate: (user: 
               key={message.id}
               className={`message-bubble ${message.fromUserId === user.id ? "self" : "other"}`}
             >
-              <div className="message-user">{message.fromDisplayName}</div>
               <div>{message.content}</div>
+              <div className="message-meta">
+                <small>{new Date(message.createdAt).toLocaleTimeString("fa-IR", { hour: "2-digit", minute: "2-digit" })}</small>
+                {message.fromUserId === user.id ? <span>✓✓</span> : null}
+              </div>
             </div>
           ))}
         </section>
@@ -602,6 +650,14 @@ function ChatApp({ user, onUserUpdate }: { user: AuthUser; onUserUpdate: (user: 
 
             setDirectMessages((allMessages) => [...allMessages, chatMessage]);
             socket.send(JSON.stringify(chatMessage satisfies Message));
+            socket.send(
+              JSON.stringify({
+                type: "typing",
+                fromUserId: user.id,
+                toUserId: selectedContact.id,
+                isTyping: false,
+              } satisfies Message),
+            );
 
             content.value = "";
           }}
@@ -616,7 +672,47 @@ function ChatApp({ user, onUserUpdate }: { user: AuthUser; onUserUpdate: (user: 
             }
             autoComplete="off"
             disabled={!selectedContact}
+            onChange={(event) => {
+              if (!selectedContact) {
+                return;
+              }
+              socket.send(
+                JSON.stringify({
+                  type: "typing",
+                  fromUserId: user.id,
+                  toUserId: selectedContact.id,
+                  isTyping: Boolean(event.currentTarget.value.trim()),
+                } satisfies Message),
+              );
+            }}
           />
+          <div className="quick-replies">
+            {["👍", "😂", "🔥"].map((emoji) => (
+              <button
+                key={emoji}
+                type="button"
+                disabled={!selectedContact}
+                onClick={() => {
+                  if (!selectedContact) {
+                    return;
+                  }
+                  const chatMessage: DirectMessage = {
+                    type: "direct-add",
+                    id: nanoid(10),
+                    content: emoji,
+                    fromUserId: user.id,
+                    toUserId: selectedContact.id,
+                    fromDisplayName: user.displayName,
+                    createdAt: Date.now(),
+                  };
+                  setDirectMessages((allMessages) => [...allMessages, chatMessage]);
+                  socket.send(JSON.stringify(chatMessage satisfies Message));
+                }}
+              >
+                {emoji}
+              </button>
+            ))}
+          </div>
           <button type="submit" className="send-message button-primary" disabled={!selectedContact}>
             ارسال
           </button>
