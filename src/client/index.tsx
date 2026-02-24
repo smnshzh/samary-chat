@@ -1,6 +1,6 @@
 import { createRoot } from "react-dom/client";
 import { usePartySocket } from "partysocket/react";
-import React, { useEffect, useMemo, useState } from "react";
+import React, { useEffect, useMemo, useRef, useState } from "react";
 import {
   BrowserRouter,
   Routes,
@@ -11,7 +11,12 @@ import {
 } from "react-router";
 import { nanoid } from "nanoid";
 
-import { type AuthUser, type ChatMessage, type Message } from "../shared";
+import {
+  type AuthUser,
+  type ChatMessage,
+  type ContactUser,
+  type Message,
+} from "../shared";
 
 type AuthResponse = {
   authenticated: boolean;
@@ -41,14 +46,14 @@ function LoginGate({ onAuthenticated }: { onAuthenticated: (user: AuthUser) => v
         body: JSON.stringify({ username, password }),
       });
 
-      const data = (await response.json()) as { username?: string; error?: string };
+      const data = (await response.json()) as { user?: AuthUser; error?: string };
 
-      if (!response.ok || !data.username) {
+      if (!response.ok || !data.user) {
         setError(data.error ?? "ورود ناموفق بود.");
         return;
       }
 
-      onAuthenticated({ username: data.username });
+      onAuthenticated(data.user);
     } catch {
       setError("خطا در ارتباط با سرور.");
     } finally {
@@ -92,8 +97,22 @@ function LoginGate({ onAuthenticated }: { onAuthenticated: (user: AuthUser) => v
   );
 }
 
-function ChatApp({ user }: { user: AuthUser }) {
+function ChatApp({ user, onUserUpdate }: { user: AuthUser; onUserUpdate: (user: AuthUser) => void }) {
   const [messages, setMessages] = useState<ChatMessage[]>([]);
+  const [contacts, setContacts] = useState<ContactUser[]>([]);
+  const [contactIdInput, setContactIdInput] = useState("");
+  const [profileName, setProfileName] = useState(user.displayName);
+  const [profileBio, setProfileBio] = useState(user.bio);
+  const [statusMessage, setStatusMessage] = useState<string | null>(null);
+  const [callTargetId, setCallTargetId] = useState("");
+  const [callActive, setCallActive] = useState(false);
+  const [incomingCallFrom, setIncomingCallFrom] = useState<string | null>(null);
+
+  const localVideoRef = useRef<HTMLVideoElement>(null);
+  const remoteVideoRef = useRef<HTMLVideoElement>(null);
+  const localStreamRef = useRef<MediaStream | null>(null);
+  const peerRef = useRef<RTCPeerConnection | null>(null);
+
   const { room } = useParams();
   const navigate = useNavigate();
 
@@ -103,31 +122,191 @@ function ChatApp({ user }: { user: AuthUser }) {
     onMessage: (evt) => {
       const message = JSON.parse(evt.data as string) as Message;
       if (message.type === "add") {
-        const foundIndex = messages.findIndex((m) => m.id === message.id);
-        if (foundIndex === -1) {
-          setMessages((allMessages) => [...allMessages, { ...message }]);
-        } else {
-          setMessages((allMessages) => {
-            return allMessages
-              .slice(0, foundIndex)
-              .concat({ ...message })
-              .concat(allMessages.slice(foundIndex + 1));
-          });
-        }
-      } else if (message.type === "update") {
+        setMessages((allMessages) => {
+          const foundIndex = allMessages.findIndex((m) => m.id === message.id);
+          if (foundIndex === -1) {
+            return [...allMessages, { ...message }];
+          }
+          return allMessages.map((m) => (m.id === message.id ? { ...message } : m));
+        });
+        return;
+      }
+
+      if (message.type === "update") {
         setMessages((allMessages) =>
           allMessages.map((item) => (item.id === message.id ? { ...message } : item)),
         );
-      } else {
+        return;
+      }
+
+      if (message.type === "all") {
         setMessages(message.messages);
+        return;
+      }
+
+      if (message.type === "signal" && message.toUserId === user.id) {
+        void handleSignal(message);
       }
     },
   });
 
+  const loadContacts = async () => {
+    const response = await fetch("/api/users/contacts", { credentials: "include" });
+    const data = (await response.json()) as { contacts?: ContactUser[]; error?: string };
+    if (response.ok && data.contacts) {
+      setContacts(data.contacts);
+    } else if (data.error) {
+      setStatusMessage(data.error);
+    }
+  };
+
+  useEffect(() => {
+    void loadContacts();
+  }, []);
+
+  const createPeer = () => {
+    const peer = new RTCPeerConnection({
+      iceServers: [{ urls: "stun:stun.l.google.com:19302" }],
+    });
+
+    peer.ontrack = (event) => {
+      if (remoteVideoRef.current) {
+        remoteVideoRef.current.srcObject = event.streams[0] ?? null;
+      }
+    };
+
+    peer.onicecandidate = (event) => {
+      if (!event.candidate || !callTargetId) {
+        return;
+      }
+
+      socket.send(
+        JSON.stringify({
+          type: "signal",
+          fromUserId: user.id,
+          toUserId: callTargetId,
+          signalType: "ice-candidate",
+          payload: JSON.stringify(event.candidate),
+        } satisfies Message),
+      );
+    };
+
+    peerRef.current = peer;
+    return peer;
+  };
+
+  const ensureLocalStream = async () => {
+    if (!localStreamRef.current) {
+      localStreamRef.current = await navigator.mediaDevices.getUserMedia({
+        video: true,
+        audio: true,
+      });
+    }
+
+    if (localVideoRef.current) {
+      localVideoRef.current.srcObject = localStreamRef.current;
+    }
+
+    return localStreamRef.current;
+  };
+
+  const handleSignal = async (message: Extract<Message, { type: "signal" }>) => {
+    if (message.signalType === "call-end") {
+      endCall();
+      return;
+    }
+
+    setCallTargetId(message.fromUserId);
+
+    let peer = peerRef.current;
+    if (!peer) {
+      peer = createPeer();
+      const stream = await ensureLocalStream();
+      stream.getTracks().forEach((track) => peer?.addTrack(track, stream));
+    }
+
+    if (message.signalType === "offer") {
+      setIncomingCallFrom(message.fromUserId);
+      await peer.setRemoteDescription(
+        new RTCSessionDescription(JSON.parse(message.payload) as RTCSessionDescriptionInit),
+      );
+      const answer = await peer.createAnswer();
+      await peer.setLocalDescription(answer);
+      socket.send(
+        JSON.stringify({
+          type: "signal",
+          fromUserId: user.id,
+          toUserId: message.fromUserId,
+          signalType: "answer",
+          payload: JSON.stringify(answer),
+        } satisfies Message),
+      );
+      setCallActive(true);
+      return;
+    }
+
+    if (message.signalType === "answer") {
+      await peer.setRemoteDescription(
+        new RTCSessionDescription(JSON.parse(message.payload) as RTCSessionDescriptionInit),
+      );
+      setCallActive(true);
+      return;
+    }
+
+    if (message.signalType === "ice-candidate") {
+      await peer.addIceCandidate(
+        new RTCIceCandidate(JSON.parse(message.payload) as RTCIceCandidateInit),
+      );
+    }
+  };
+
+  const startVideoCall = async () => {
+    if (!callTargetId.trim()) {
+      setStatusMessage("برای تماس تصویری، آیدی مقصد را وارد کنید.");
+      return;
+    }
+
+    const peer = createPeer();
+    const stream = await ensureLocalStream();
+    stream.getTracks().forEach((track) => peer.addTrack(track, stream));
+
+    const offer = await peer.createOffer();
+    await peer.setLocalDescription(offer);
+
+    socket.send(
+      JSON.stringify({
+        type: "signal",
+        fromUserId: user.id,
+        toUserId: callTargetId.trim(),
+        signalType: "offer",
+        payload: JSON.stringify(offer),
+      } satisfies Message),
+    );
+
+    setIncomingCallFrom(null);
+  };
+
+  const endCall = () => {
+    peerRef.current?.close();
+    peerRef.current = null;
+    localStreamRef.current?.getTracks().forEach((track) => track.stop());
+    localStreamRef.current = null;
+    if (localVideoRef.current) {
+      localVideoRef.current.srcObject = null;
+    }
+    if (remoteVideoRef.current) {
+      remoteVideoRef.current.srcObject = null;
+    }
+    setCallActive(false);
+  };
+
   return (
     <div className="chat container">
       <div className="auth-header">
-        <span>وارد شده با: {user.username}</span>
+        <div>
+          <div>وارد شده با: {user.username}</div>
+          <div>آیدی شما: <code>{user.id}</code></div>
+        </div>
         <button
           type="button"
           onClick={async () => {
@@ -141,6 +320,93 @@ function ChatApp({ user }: { user: AuthUser }) {
           خروج
         </button>
       </div>
+
+      <div className="panel">
+        <h6>پروفایل</h6>
+        <form
+          onSubmit={async (event) => {
+            event.preventDefault();
+            const response = await fetch("/api/users/profile", {
+              method: "POST",
+              credentials: "include",
+              headers: { "content-type": "application/json" },
+              body: JSON.stringify({ displayName: profileName, bio: profileBio }),
+            });
+            const data = (await response.json()) as { user?: AuthUser; error?: string };
+            if (response.ok && data.user) {
+              onUserUpdate(data.user);
+              setStatusMessage("پروفایل با موفقیت ذخیره شد.");
+            } else {
+              setStatusMessage(data.error ?? "خطا در ذخیره پروفایل.");
+            }
+          }}
+        >
+          <input value={profileName} onChange={(e) => setProfileName(e.target.value)} placeholder="نام نمایشی" required />
+          <input value={profileBio} onChange={(e) => setProfileBio(e.target.value)} placeholder="بیو" />
+          <button type="submit">ذخیره پروفایل</button>
+        </form>
+      </div>
+
+      <div className="panel">
+        <h6>افزودن کاربر با آیدی</h6>
+        <form
+          onSubmit={async (event) => {
+            event.preventDefault();
+            const response = await fetch("/api/users/contacts/add", {
+              method: "POST",
+              credentials: "include",
+              headers: { "content-type": "application/json" },
+              body: JSON.stringify({ userId: contactIdInput.trim() }),
+            });
+            const data = (await response.json()) as { error?: string };
+            if (response.ok) {
+              setContactIdInput("");
+              setStatusMessage("کاربر اضافه شد.");
+              await loadContacts();
+            } else {
+              setStatusMessage(data.error ?? "افزودن کاربر ناموفق بود.");
+            }
+          }}
+        >
+          <input
+            type="text"
+            value={contactIdInput}
+            onChange={(event) => setContactIdInput(event.target.value)}
+            placeholder="User ID"
+            required
+          />
+          <button type="submit">Add</button>
+        </form>
+        <ul>
+          {contacts.map((contact) => (
+            <li key={contact.id}>
+              {contact.displayName} ({contact.username}) — <code>{contact.id}</code>
+            </li>
+          ))}
+        </ul>
+      </div>
+
+      <div className="panel">
+        <h6>مکالمه تصویری</h6>
+        <input
+          value={callTargetId}
+          onChange={(event) => setCallTargetId(event.target.value)}
+          placeholder="آیدی کاربر مقصد"
+        />
+        <div className="call-actions">
+          <button type="button" onClick={() => void startVideoCall()}>شروع تماس</button>
+          <button type="button" onClick={endCall}>قطع تماس</button>
+        </div>
+        {incomingCallFrom ? <p>تماس ورودی از: {incomingCallFrom}</p> : null}
+        <div className="videos">
+          <video ref={localVideoRef} autoPlay muted playsInline />
+          <video ref={remoteVideoRef} autoPlay playsInline />
+        </div>
+        {callActive ? <p>تماس فعال است.</p> : null}
+      </div>
+
+      {statusMessage ? <p>{statusMessage}</p> : null}
+
       {messages.map((message) => (
         <div key={message.id} className="row message">
           <div className="two columns user">{message.user}</div>
@@ -159,7 +425,7 @@ function ChatApp({ user }: { user: AuthUser }) {
           const chatMessage: ChatMessage = {
             id: nanoid(8),
             content: content.value,
-            user: user.username,
+            user: user.displayName,
             role: "user",
           };
           setMessages((allMessages) => [...allMessages, chatMessage]);
@@ -178,7 +444,7 @@ function ChatApp({ user }: { user: AuthUser }) {
           type="text"
           name="content"
           className="ten columns my-input-text"
-          placeholder={`سلام ${user.username}! پیام خود را بنویس...`}
+          placeholder={`سلام ${user.displayName}! پیام خود را بنویس...`}
           autoComplete="off"
         />
         <button type="submit" className="send-message two columns">
@@ -232,7 +498,7 @@ function App() {
     return null;
   }
 
-  return <ChatApp user={user} />;
+  return <ChatApp user={user} onUserUpdate={setUser} />;
 }
 
 function AppRoutes() {

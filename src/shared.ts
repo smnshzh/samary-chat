@@ -23,10 +23,26 @@ export type Message =
   | {
       type: "all";
       messages: ChatMessage[];
+    }
+  | {
+      type: "signal";
+      fromUserId: string;
+      toUserId: string;
+      signalType: "offer" | "answer" | "ice-candidate" | "call-end";
+      payload: string;
     };
 
 export type AuthUser = {
+  id: string;
   username: string;
+  displayName: string;
+  bio: string;
+};
+
+export type ContactUser = {
+  id: string;
+  username: string;
+  displayName: string;
 };
 
 export const names = [

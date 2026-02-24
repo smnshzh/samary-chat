@@ -5,12 +5,14 @@ import {
   routePartykitRequest,
 } from "partyserver";
 
-import type { ChatMessage, Message } from "../shared";
+import type { AuthUser, ChatMessage, ContactUser, Message } from "../shared";
 
 type UserRecord = {
   id: string;
   username: string;
   passwordHash: string;
+  displayName: string;
+  bio: string;
 };
 
 const SESSION_COOKIE = "chat_session";
@@ -125,8 +127,63 @@ export class Auth {
     this.state = state;
 
     this.state.storage.sql.exec(
-      `CREATE TABLE IF NOT EXISTS users (id TEXT PRIMARY KEY, username TEXT UNIQUE, password_hash TEXT NOT NULL)`,
+      `CREATE TABLE IF NOT EXISTS users (
+        id TEXT PRIMARY KEY,
+        username TEXT UNIQUE,
+        password_hash TEXT NOT NULL,
+        display_name TEXT NOT NULL,
+        bio TEXT NOT NULL DEFAULT ''
+      )`,
     );
+
+    this.state.storage.sql.exec(
+      `CREATE TABLE IF NOT EXISTS contacts (
+        owner_id TEXT NOT NULL,
+        contact_id TEXT NOT NULL,
+        PRIMARY KEY (owner_id, contact_id)
+      )`,
+    );
+  }
+
+  toAuthUser(user: UserRecord): AuthUser {
+    return {
+      id: user.id,
+      username: user.username,
+      displayName: user.displayName,
+      bio: user.bio,
+    };
+  }
+
+  getUserByUsername(username: string) {
+    return this.state.storage.sql
+      .exec(
+        `SELECT
+          id,
+          username,
+          password_hash as passwordHash,
+          display_name as displayName,
+          bio
+        FROM users
+        WHERE username = ?`,
+        username,
+      )
+      .one() as UserRecord | null;
+  }
+
+  getUserById(id: string) {
+    return this.state.storage.sql
+      .exec(
+        `SELECT
+          id,
+          username,
+          password_hash as passwordHash,
+          display_name as displayName,
+          bio
+        FROM users
+        WHERE id = ?`,
+        id,
+      )
+      .one() as UserRecord | null;
   }
 
   async fetch(request: Request) {
@@ -147,24 +204,23 @@ export class Auth {
         );
       }
 
-      const existing = this.state.storage.sql
-        .exec(`SELECT id FROM users WHERE username = ?`, username)
-        .toArray() as Array<{ id: string }>;
-
-      if (existing.length > 0) {
+      const existing = this.getUserByUsername(username);
+      if (existing) {
         return json({ error: "این نام کاربری قبلاً ثبت شده است." }, 409);
       }
 
       const passwordHash = await sha256(password);
       const id = crypto.randomUUID();
+      const displayName = username;
       this.state.storage.sql.exec(
-        `INSERT INTO users (id, username, password_hash) VALUES (?, ?, ?)`,
+        `INSERT INTO users (id, username, password_hash, display_name, bio) VALUES (?, ?, ?, ?, '')`,
         id,
         username,
         passwordHash,
+        displayName,
       );
 
-      return json({ username });
+      return json({ user: { id, username, displayName, bio: "" } satisfies AuthUser });
     }
 
     if (request.method === "POST" && url.pathname === "/login") {
@@ -179,12 +235,7 @@ export class Auth {
         return json({ error: "نام کاربری و رمز عبور اجباری هستند." }, 400);
       }
 
-      const user = this.state.storage.sql
-        .exec(
-          `SELECT id, username, password_hash as passwordHash FROM users WHERE username = ?`,
-          username,
-        )
-        .one() as UserRecord | null;
+      const user = this.getUserByUsername(username);
 
       if (!user) {
         return json({ error: "کاربر پیدا نشد." }, 404);
@@ -195,7 +246,123 @@ export class Auth {
         return json({ error: "رمز عبور اشتباه است." }, 401);
       }
 
-      return json({ username: user.username });
+      return json({ user: this.toAuthUser(user) });
+    }
+
+    if (request.method === "GET" && url.pathname === "/me") {
+      const username = url.searchParams.get("username")?.trim();
+      if (!username) {
+        return json({ error: "نام کاربری لازم است." }, 400);
+      }
+
+      const user = this.getUserByUsername(username);
+      if (!user) {
+        return json({ error: "کاربر یافت نشد." }, 404);
+      }
+
+      return json({ user: this.toAuthUser(user) });
+    }
+
+    if (request.method === "POST" && url.pathname === "/profile") {
+      const body = (await request.json()) as {
+        username?: string;
+        displayName?: string;
+        bio?: string;
+      };
+      const username = body.username?.trim();
+      const displayName = body.displayName?.trim();
+      const bio = body.bio?.trim() ?? "";
+
+      if (!username || !displayName) {
+        return json({ error: "نام کاربری و نام نمایشی لازم است." }, 400);
+      }
+
+      const user = this.getUserByUsername(username);
+      if (!user) {
+        return json({ error: "کاربر یافت نشد." }, 404);
+      }
+
+      this.state.storage.sql.exec(
+        `UPDATE users SET display_name = ?, bio = ? WHERE username = ?`,
+        displayName,
+        bio,
+        username,
+      );
+
+      return json({
+        user: {
+          id: user.id,
+          username: user.username,
+          displayName,
+          bio,
+        } satisfies AuthUser,
+      });
+    }
+
+    if (request.method === "POST" && url.pathname === "/contacts/add") {
+      const body = (await request.json()) as {
+        username?: string;
+        userId?: string;
+      };
+      const username = body.username?.trim();
+      const userId = body.userId?.trim();
+
+      if (!username || !userId) {
+        return json({ error: "نام کاربری و آیدی کاربر لازم است." }, 400);
+      }
+
+      const owner = this.getUserByUsername(username);
+      if (!owner) {
+        return json({ error: "کاربر جاری پیدا نشد." }, 404);
+      }
+
+      if (owner.id === userId) {
+        return json({ error: "نمی‌توانید خودتان را اضافه کنید." }, 400);
+      }
+
+      const target = this.getUserById(userId);
+      if (!target) {
+        return json({ error: "کاربری با این آیدی وجود ندارد." }, 404);
+      }
+
+      this.state.storage.sql.exec(
+        `INSERT INTO contacts (owner_id, contact_id) VALUES (?, ?) ON CONFLICT DO NOTHING`,
+        owner.id,
+        target.id,
+      );
+
+      return json({
+        contact: {
+          id: target.id,
+          username: target.username,
+          displayName: target.displayName,
+        } satisfies ContactUser,
+      });
+    }
+
+    if (request.method === "GET" && url.pathname === "/contacts") {
+      const username = url.searchParams.get("username")?.trim();
+      if (!username) {
+        return json({ error: "نام کاربری لازم است." }, 400);
+      }
+
+      const owner = this.getUserByUsername(username);
+      if (!owner) {
+        return json({ error: "کاربر جاری پیدا نشد." }, 404);
+      }
+
+      const contacts = this.state.storage.sql
+        .exec(
+          `SELECT u.id, u.username, u.display_name as displayName
+           FROM contacts c
+           JOIN users u ON u.id = c.contact_id
+           WHERE c.owner_id = ?
+           ORDER BY u.display_name ASC`,
+          owner.id,
+        )
+        .toArray() as ContactUser[];
+
+      return json({ contacts });
     }
 
     return new Response("Not found", { status: 404 });
@@ -206,10 +373,6 @@ export class Chat extends Server<Env> {
   static options = { hibernate: true };
 
   messages = [] as ChatMessage[];
-
-  broadcastMessage(message: Message, exclude?: string[]) {
-    this.broadcast(JSON.stringify(message), exclude);
-  }
 
   onStart() {
     this.ctx.storage.sql.exec(
@@ -233,12 +396,7 @@ export class Chat extends Server<Env> {
   saveMessage(message: ChatMessage) {
     const existingMessage = this.messages.find((m) => m.id === message.id);
     if (existingMessage) {
-      this.messages = this.messages.map((m) => {
-        if (m.id === message.id) {
-          return message;
-        }
-        return m;
-      });
+      this.messages = this.messages.map((m) => (m.id === message.id ? message : m));
     } else {
       this.messages.push(message);
     }
@@ -280,8 +438,8 @@ export default {
         return response;
       }
 
-      const data = (await response.json()) as { username: string };
-      const token = await createSessionToken(data.username, env.AUTH_SECRET);
+      const data = (await response.json()) as { user: AuthUser };
+      const token = await createSessionToken(data.user.username, env.AUTH_SECRET);
       return new Response(JSON.stringify(data), {
         status: 200,
         headers: {
@@ -302,8 +460,8 @@ export default {
         return response;
       }
 
-      const data = (await response.json()) as { username: string };
-      const token = await createSessionToken(data.username, env.AUTH_SECRET);
+      const data = (await response.json()) as { user: AuthUser };
+      const token = await createSessionToken(data.user.username, env.AUTH_SECRET);
       return new Response(JSON.stringify(data), {
         status: 200,
         headers: {
@@ -312,6 +470,11 @@ export default {
         },
       });
     }
+
+    const cookie = getCookieValue(request.headers.get("cookie"), SESSION_COOKIE);
+    const payload = cookie
+      ? await verifySessionToken(cookie, env.AUTH_SECRET)
+      : null;
 
     if (request.method === "POST" && url.pathname === "/api/auth/logout") {
       return new Response(JSON.stringify({ ok: true }), {
@@ -323,17 +486,63 @@ export default {
     }
 
     if (request.method === "GET" && url.pathname === "/api/auth/me") {
-      const cookie = getCookieValue(request.headers.get("cookie"), SESSION_COOKIE);
-      if (!cookie) {
-        return json({ authenticated: false });
-      }
-
-      const payload = await verifySessionToken(cookie, env.AUTH_SECRET);
       if (!payload) {
         return json({ authenticated: false });
       }
 
-      return json({ authenticated: true, user: { username: payload.username } });
+      const response = await authStub.fetch(
+        `https://auth/me?username=${encodeURIComponent(payload.username)}`,
+      );
+
+      if (!response.ok) {
+        return json({ authenticated: false });
+      }
+
+      const data = (await response.json()) as { user: AuthUser };
+      return json({ authenticated: true, user: data.user });
+    }
+
+    if (request.method === "POST" && url.pathname === "/api/users/profile") {
+      if (!payload) {
+        return json({ error: "Unauthorized" }, 401);
+      }
+
+      const body = (await request.json()) as { displayName?: string; bio?: string };
+      return authStub.fetch("https://auth/profile", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          username: payload.username,
+          displayName: body.displayName,
+          bio: body.bio,
+        }),
+      });
+    }
+
+    if (request.method === "POST" && url.pathname === "/api/users/contacts/add") {
+      if (!payload) {
+        return json({ error: "Unauthorized" }, 401);
+      }
+
+      const body = (await request.json()) as { userId?: string };
+      return authStub.fetch("https://auth/contacts/add", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          username: payload.username,
+          userId: body.userId,
+        }),
+      });
+    }
+
+    if (request.method === "GET" && url.pathname === "/api/users/contacts") {
+      if (!payload) {
+        return json({ error: "Unauthorized" }, 401);
+      }
+
+      return authStub.fetch(
+        `https://auth/contacts?username=${encodeURIComponent(payload.username)}`,
+      );
     }
 
     return (
