@@ -126,6 +126,9 @@ function ChatApp({ user, onUserUpdate }: { user: AuthUser; onUserUpdate: (user: 
   const [onlineUsers, setOnlineUsers] = useState<Record<string, boolean>>({});
   const [selectedContactId, setSelectedContactId] = useState<string | null>(null);
   const [contactIdInput, setContactIdInput] = useState("");
+  const [searchQuery, setSearchQuery] = useState("");
+  const [searchResults, setSearchResults] = useState<ContactUser[]>([]);
+  const [searchLoading, setSearchLoading] = useState(false);
   const [profileName, setProfileName] = useState(user.displayName);
   const [profileBio, setProfileBio] = useState(user.bio);
   const [statusMessage, setStatusMessage] = useState<string | null>(null);
@@ -457,6 +460,38 @@ function ChatApp({ user, onUserUpdate }: { user: AuthUser; onUserUpdate: (user: 
     })
     .sort((a, b) => (b.latestMessage?.createdAt ?? 0) - (a.latestMessage?.createdAt ?? 0));
 
+  const isAlreadyContact = (userId: string) => contacts.some((contact) => contact.id === userId);
+
+  const searchUsers = async () => {
+    const query = searchQuery.trim();
+    if (query.length < 2) {
+      setStatusMessage("عبارت جستجو باید حداقل ۲ کاراکتر باشد.");
+      setSearchResults([]);
+      return;
+    }
+
+    setSearchLoading(true);
+    try {
+      const response = await fetch(`/api/users/search?query=${encodeURIComponent(query)}`, {
+        credentials: "include",
+      });
+      const data = (await response.json()) as { users?: ContactUser[]; error?: string };
+
+      if (!response.ok || !data.users) {
+        setStatusMessage(data.error ?? "جستجوی کاربر ناموفق بود.");
+        setSearchResults([]);
+        return;
+      }
+
+      setSearchResults(data.users);
+    } catch {
+      setStatusMessage("خطا در ارتباط با سرور.");
+      setSearchResults([]);
+    } finally {
+      setSearchLoading(false);
+    }
+  };
+
   const createRoom = () => {
     const roomName = window.prompt("نام اتاق جدید را وارد کنید:", "اتاق تیمی");
     if (!roomName?.trim()) {
@@ -582,6 +617,60 @@ function ChatApp({ user, onUserUpdate }: { user: AuthUser; onUserUpdate: (user: 
             />
             <button type="submit">افزودن</button>
           </form>
+
+          <div className="search-users-block">
+            <h6>جستجوی کاربر</h6>
+            <form
+              onSubmit={(event) => {
+                event.preventDefault();
+                void searchUsers();
+              }}
+            >
+              <input
+                type="text"
+                value={searchQuery}
+                onChange={(event) => setSearchQuery(event.target.value)}
+                placeholder="نام کاربری، نام نمایشی یا آیدی"
+              />
+              <button type="submit" disabled={searchLoading}>
+                {searchLoading ? "..." : "جستجو"}
+              </button>
+            </form>
+            {searchResults.length > 0 ? (
+              <ul className="search-results">
+                {searchResults.map((candidate) => (
+                  <li key={candidate.id}>
+                    <div>
+                      <strong>{candidate.displayName}</strong>
+                      <small>@{candidate.username}</small>
+                    </div>
+                    <button
+                      type="button"
+                      disabled={isAlreadyContact(candidate.id)}
+                      onClick={async () => {
+                        const response = await fetch("/api/users/contacts/add", {
+                          method: "POST",
+                          credentials: "include",
+                          headers: { "content-type": "application/json" },
+                          body: JSON.stringify({ userId: candidate.id }),
+                        });
+                        const data = (await response.json()) as { error?: string };
+                        if (response.ok) {
+                          setStatusMessage(`${candidate.displayName} اضافه شد.`);
+                          await loadContacts();
+                        } else {
+                          setStatusMessage(data.error ?? "افزودن کاربر ناموفق بود.");
+                        }
+                      }}
+                    >
+                      {isAlreadyContact(candidate.id) ? "اضافه شده" : "افزودن"}
+                    </button>
+                  </li>
+                ))}
+              </ul>
+            ) : null}
+          </div>
+
           <ul className="contact-list">
             {sidebarConversations.map(({ contact, latestMessage }) => {
               const isSelected = selectedContactId === contact.id;

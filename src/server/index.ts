@@ -437,6 +437,49 @@ export class Auth {
       return json({ contacts });
     }
 
+    if (request.method === "GET" && url.pathname === "/users/search") {
+      const username = url.searchParams.get("username")?.trim();
+      const query = url.searchParams.get("query")?.trim();
+
+      if (!username) {
+        return json({ error: "نام کاربری لازم است." }, 400);
+      }
+
+      if (!query || query.length < 2) {
+        return json({ error: "عبارت جستجو باید حداقل ۲ کاراکتر باشد." }, 400);
+      }
+
+      const owner = this.getUserByUsername(username);
+      if (!owner) {
+        return json({ error: "کاربر جاری پیدا نشد." }, 404);
+      }
+
+      const normalizedQuery = `%${query.toLowerCase()}%`;
+      const users = this.state.storage.sql
+        .exec(
+          `SELECT
+            id,
+            username,
+            display_name as displayName
+           FROM users
+           WHERE id != ?
+             AND (
+               lower(username) LIKE ?
+               OR lower(display_name) LIKE ?
+               OR lower(id) LIKE ?
+             )
+           ORDER BY display_name ASC
+           LIMIT 10`,
+          owner.id,
+          normalizedQuery,
+          normalizedQuery,
+          normalizedQuery,
+        )
+        .toArray() as ContactUser[];
+
+      return json({ users });
+    }
+
     if (request.method === "GET" && url.pathname === "/direct") {
       const username = url.searchParams.get("username")?.trim();
       if (!username) {
@@ -868,6 +911,17 @@ export default {
 
       return authStub.fetch(
         `https://auth/contacts?username=${encodeURIComponent(payload.username)}`,
+      );
+    }
+
+    if (request.method === "GET" && url.pathname === "/api/users/search") {
+      if (!payload) {
+        return json({ error: "Unauthorized" }, 401);
+      }
+
+      const query = url.searchParams.get("query")?.trim() ?? "";
+      return authStub.fetch(
+        `https://auth/users/search?username=${encodeURIComponent(payload.username)}&query=${encodeURIComponent(query)}`,
       );
     }
 
