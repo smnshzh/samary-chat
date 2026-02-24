@@ -148,10 +148,28 @@ function ChatApp({ user, onUserUpdate }: { user: AuthUser; onUserUpdate: (user: 
       const message = JSON.parse(evt.data as string) as Message;
 
       if (message.type === "direct-all") {
+        setDirectMessages((allMessages) => {
+          const messageMap = new Map(allMessages.map((item) => [item.id, item]));
+          message.messages.forEach((item) => {
+            messageMap.set(item.id, item);
+          });
+          return [...messageMap.values()].sort((a, b) => a.createdAt - b.createdAt);
+        });
         return;
       }
 
       if (message.type === "direct-add") {
+        if (message.fromUserId !== user.id && message.toUserId !== user.id) {
+          return;
+        }
+
+        setDirectMessages((allMessages) => {
+          if (allMessages.some((item) => item.id === message.id)) {
+            return allMessages;
+          }
+
+          return [...allMessages, message].sort((a, b) => a.createdAt - b.createdAt);
+        });
         return;
       }
 
@@ -217,17 +235,6 @@ function ChatApp({ user, onUserUpdate }: { user: AuthUser; onUserUpdate: (user: 
   useEffect(() => {
     void loadContacts();
     void loadDirectMessages();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
-
-  useEffect(() => {
-    const poller = window.setInterval(() => {
-      void loadDirectMessages();
-    }, 3000);
-
-    return () => {
-      window.clearInterval(poller);
-    };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
@@ -681,6 +688,8 @@ function ChatApp({ user, onUserUpdate }: { user: AuthUser; onUserUpdate: (user: 
                 }
                 return [...allMessages, sentMessage];
               });
+
+              socket.send(JSON.stringify(sentMessage satisfies Message));
             })();
 
             socket.send(
@@ -757,6 +766,8 @@ function ChatApp({ user, onUserUpdate }: { user: AuthUser; onUserUpdate: (user: 
                       }
                       return [...allMessages, sentMessage];
                     });
+
+                    socket.send(JSON.stringify(sentMessage satisfies Message));
                   })();
                 }}
               >
