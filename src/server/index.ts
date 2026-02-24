@@ -7,6 +7,201 @@ import {
 
 import type { ChatMessage, Message } from "../shared";
 
+type UserRecord = {
+  id: string;
+  username: string;
+  passwordHash: string;
+};
+
+const SESSION_COOKIE = "chat_session";
+const AUTH_OBJECT_ID = "auth";
+
+function json(data: unknown, status = 200) {
+  return new Response(JSON.stringify(data), {
+    status,
+    headers: {
+      "content-type": "application/json; charset=utf-8",
+      "cache-control": "no-store",
+    },
+  });
+}
+
+function getCookieValue(cookieHeader: string | null, cookieName: string) {
+  if (!cookieHeader) {
+    return null;
+  }
+
+  const entries = cookieHeader.split(";").map((entry) => entry.trim());
+  for (const entry of entries) {
+    if (entry.startsWith(`${cookieName}=`)) {
+      return entry.slice(cookieName.length + 1);
+    }
+  }
+
+  return null;
+}
+
+async function sha256(value: string) {
+  const input = new TextEncoder().encode(value);
+  const digest = await crypto.subtle.digest("SHA-256", input);
+  return [...new Uint8Array(digest)]
+    .map((byte) => byte.toString(16).padStart(2, "0"))
+    .join("");
+}
+
+function toBase64Url(input: string) {
+  return btoa(input).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/g, "");
+}
+
+function fromBase64Url(input: string) {
+  const base64 = input.replace(/-/g, "+").replace(/_/g, "/");
+  const padding = base64.length % 4;
+  const padded = padding === 0 ? base64 : `${base64}${"=".repeat(4 - padding)}`;
+  return atob(padded);
+}
+
+async function signPayload(payload: string, secret: string) {
+  const key = await crypto.subtle.importKey(
+    "raw",
+    new TextEncoder().encode(secret),
+    { name: "HMAC", hash: "SHA-256" },
+    false,
+    ["sign"],
+  );
+
+  const signature = await crypto.subtle.sign(
+    "HMAC",
+    key,
+    new TextEncoder().encode(payload),
+  );
+
+  const signatureText = String.fromCharCode(...new Uint8Array(signature));
+  return toBase64Url(signatureText);
+}
+
+async function createSessionToken(username: string, secret: string) {
+  const expiresAt = Date.now() + 1000 * 60 * 60 * 24 * 7;
+  const payload = JSON.stringify({ username, expiresAt });
+  const encodedPayload = toBase64Url(payload);
+  const signature = await signPayload(encodedPayload, secret);
+  return `${encodedPayload}.${signature}`;
+}
+
+async function verifySessionToken(token: string, secret: string) {
+  const [encodedPayload, signature] = token.split(".");
+  if (!encodedPayload || !signature) {
+    return null;
+  }
+
+  const expectedSignature = await signPayload(encodedPayload, secret);
+  if (expectedSignature !== signature) {
+    return null;
+  }
+
+  const payload = JSON.parse(fromBase64Url(encodedPayload)) as {
+    username: string;
+    expiresAt: number;
+  };
+
+  if (payload.expiresAt < Date.now()) {
+    return null;
+  }
+
+  return payload;
+}
+
+function setSessionCookie(token: string) {
+  return `${SESSION_COOKIE}=${token}; Path=/; HttpOnly; SameSite=Lax; Max-Age=604800`;
+}
+
+function clearSessionCookie() {
+  return `${SESSION_COOKIE}=; Path=/; HttpOnly; SameSite=Lax; Max-Age=0`;
+}
+
+export class Auth {
+  state: DurableObjectState;
+
+  constructor(state: DurableObjectState, _env: Env) {
+    this.state = state;
+
+    this.state.storage.sql.exec(
+      `CREATE TABLE IF NOT EXISTS users (id TEXT PRIMARY KEY, username TEXT UNIQUE, password_hash TEXT NOT NULL)`,
+    );
+  }
+
+  async fetch(request: Request) {
+    const url = new URL(request.url);
+
+    if (request.method === "POST" && url.pathname === "/register") {
+      const body = (await request.json()) as {
+        username?: string;
+        password?: string;
+      };
+      const username = body.username?.trim();
+      const password = body.password?.trim();
+
+      if (!username || !password || password.length < 6) {
+        return json(
+          { error: "نام کاربری و رمز عبور معتبر لازم است (حداقل ۶ کاراکتر)." },
+          400,
+        );
+      }
+
+      const existing = this.state.storage.sql
+        .exec(`SELECT id FROM users WHERE username = ?`, username)
+        .toArray() as Array<{ id: string }>;
+
+      if (existing.length > 0) {
+        return json({ error: "این نام کاربری قبلاً ثبت شده است." }, 409);
+      }
+
+      const passwordHash = await sha256(password);
+      const id = crypto.randomUUID();
+      this.state.storage.sql.exec(
+        `INSERT INTO users (id, username, password_hash) VALUES (?, ?, ?)`,
+        id,
+        username,
+        passwordHash,
+      );
+
+      return json({ username });
+    }
+
+    if (request.method === "POST" && url.pathname === "/login") {
+      const body = (await request.json()) as {
+        username?: string;
+        password?: string;
+      };
+      const username = body.username?.trim();
+      const password = body.password?.trim();
+
+      if (!username || !password) {
+        return json({ error: "نام کاربری و رمز عبور اجباری هستند." }, 400);
+      }
+
+      const user = this.state.storage.sql
+        .exec(
+          `SELECT id, username, password_hash as passwordHash FROM users WHERE username = ?`,
+          username,
+        )
+        .one() as UserRecord | null;
+
+      if (!user) {
+        return json({ error: "کاربر پیدا نشد." }, 404);
+      }
+
+      const passwordHash = await sha256(password);
+      if (passwordHash !== user.passwordHash) {
+        return json({ error: "رمز عبور اشتباه است." }, 401);
+      }
+
+      return json({ username: user.username });
+    }
+
+    return new Response("Not found", { status: 404 });
+  }
+}
+
 export class Chat extends Server<Env> {
   static options = { hibernate: true };
 
@@ -17,15 +212,10 @@ export class Chat extends Server<Env> {
   }
 
   onStart() {
-    // this is where you can initialize things that need to be done before the server starts
-    // for example, load previous messages from a database or a service
-
-    // create the messages table if it doesn't exist
     this.ctx.storage.sql.exec(
       `CREATE TABLE IF NOT EXISTS messages (id TEXT PRIMARY KEY, user TEXT, role TEXT, content TEXT)`,
     );
 
-    // load the messages from the database
     this.messages = this.ctx.storage.sql
       .exec(`SELECT * FROM messages`)
       .toArray() as ChatMessage[];
@@ -41,7 +231,6 @@ export class Chat extends Server<Env> {
   }
 
   saveMessage(message: ChatMessage) {
-    // check if the message already exists
     const existingMessage = this.messages.find((m) => m.id === message.id);
     if (existingMessage) {
       this.messages = this.messages.map((m) => {
@@ -65,11 +254,9 @@ export class Chat extends Server<Env> {
     );
   }
 
-  onMessage(connection: Connection, message: WSMessage) {
-    // let's broadcast the raw message to everyone else
+  onMessage(_connection: Connection, message: WSMessage) {
     this.broadcast(message);
 
-    // let's update our local messages store
     const parsed = JSON.parse(message as string) as Message;
     if (parsed.type === "add" || parsed.type === "update") {
       this.saveMessage(parsed);
@@ -79,6 +266,76 @@ export class Chat extends Server<Env> {
 
 export default {
   async fetch(request, env) {
+    const url = new URL(request.url);
+    const authStub = env.Auth.get(env.Auth.idFromName(AUTH_OBJECT_ID));
+
+    if (request.method === "POST" && url.pathname === "/api/auth/register") {
+      const response = await authStub.fetch("https://auth/register", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: await request.text(),
+      });
+
+      if (!response.ok) {
+        return response;
+      }
+
+      const data = (await response.json()) as { username: string };
+      const token = await createSessionToken(data.username, env.AUTH_SECRET);
+      return new Response(JSON.stringify(data), {
+        status: 200,
+        headers: {
+          "content-type": "application/json; charset=utf-8",
+          "set-cookie": setSessionCookie(token),
+        },
+      });
+    }
+
+    if (request.method === "POST" && url.pathname === "/api/auth/login") {
+      const response = await authStub.fetch("https://auth/login", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: await request.text(),
+      });
+
+      if (!response.ok) {
+        return response;
+      }
+
+      const data = (await response.json()) as { username: string };
+      const token = await createSessionToken(data.username, env.AUTH_SECRET);
+      return new Response(JSON.stringify(data), {
+        status: 200,
+        headers: {
+          "content-type": "application/json; charset=utf-8",
+          "set-cookie": setSessionCookie(token),
+        },
+      });
+    }
+
+    if (request.method === "POST" && url.pathname === "/api/auth/logout") {
+      return new Response(JSON.stringify({ ok: true }), {
+        headers: {
+          "content-type": "application/json; charset=utf-8",
+          "set-cookie": clearSessionCookie(),
+        },
+      });
+    }
+
+    if (request.method === "GET" && url.pathname === "/api/auth/me") {
+      const cookie = getCookieValue(request.headers.get("cookie"), SESSION_COOKIE);
+      if (!cookie) {
+        return json({ authenticated: false });
+      }
+
+      const payload = await verifySessionToken(cookie, env.AUTH_SECRET);
+      if (!payload) {
+        return json({ authenticated: false });
+      }
+
+      return json({ authenticated: true, user: { username: payload.username } });
+    }
+
     return (
       (await routePartykitRequest(request, { ...env })) ||
       env.ASSETS.fetch(request)

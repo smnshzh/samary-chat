@@ -11,6 +11,26 @@ html {
   padding-top: 40px;
 }
 
+.auth {
+  padding-top: 80px;
+  max-width: 420px;
+}
+
+.auth-error {
+  color: #c62828;
+}
+
+.auth-switch {
+  margin-top: 10px;
+}
+
+.auth-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 12px;
+}
+
 #root {
   flex: 1;
   display: flex;

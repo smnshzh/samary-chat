@@ -25,6 +25,10 @@ export type Message =
       messages: ChatMessage[];
     };
 
+export type AuthUser = {
+  username: string;
+};
+
 export const names = [
   "Alice",
   "Bob",
