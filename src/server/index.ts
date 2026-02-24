@@ -21,6 +21,15 @@ type UserRecord = {
   bio: string;
 };
 
+type StoredDirectMessage = {
+  id: string;
+  content: string;
+  fromUserId: string;
+  toUserId: string;
+  fromDisplayName: string;
+  createdAt: number;
+};
+
 const SESSION_COOKIE = "chat_session";
 const AUTH_OBJECT_ID = "auth";
 
@@ -147,6 +156,17 @@ export class Auth {
         owner_id TEXT NOT NULL,
         contact_id TEXT NOT NULL,
         PRIMARY KEY (owner_id, contact_id)
+      )`,
+    );
+
+    this.state.storage.sql.exec(
+      `CREATE TABLE IF NOT EXISTS direct_messages (
+        id TEXT PRIMARY KEY,
+        content TEXT NOT NULL,
+        from_user_id TEXT NOT NULL,
+        to_user_id TEXT NOT NULL,
+        from_display_name TEXT NOT NULL,
+        created_at INTEGER NOT NULL
       )`,
     );
 
@@ -396,6 +416,84 @@ export class Auth {
         .toArray() as ContactUser[];
 
       return json({ contacts });
+    }
+
+    if (request.method === "GET" && url.pathname === "/direct") {
+      const username = url.searchParams.get("username")?.trim();
+      if (!username) {
+        return json({ error: "نام کاربری لازم است." }, 400);
+      }
+
+      const owner = this.getUserByUsername(username);
+      if (!owner) {
+        return json({ error: "کاربر جاری پیدا نشد." }, 404);
+      }
+
+      const messages = this.state.storage.sql
+        .exec(
+          `SELECT
+            id,
+            content,
+            from_user_id as fromUserId,
+            to_user_id as toUserId,
+            from_display_name as fromDisplayName,
+            created_at as createdAt
+           FROM direct_messages
+           WHERE from_user_id = ? OR to_user_id = ?
+           ORDER BY created_at ASC`,
+          owner.id,
+          owner.id,
+        )
+        .toArray() as StoredDirectMessage[];
+
+      return json({ messages });
+    }
+
+    if (request.method === "POST" && url.pathname === "/direct/send") {
+      const body = (await request.json()) as {
+        username?: string;
+        toUserId?: string;
+        content?: string;
+      };
+      const username = body.username?.trim();
+      const toUserId = body.toUserId?.trim();
+      const content = body.content?.trim();
+
+      if (!username || !toUserId || !content) {
+        return json({ error: "فرستنده، گیرنده و متن پیام الزامی است." }, 400);
+      }
+
+      const sender = this.getUserByUsername(username);
+      if (!sender) {
+        return json({ error: "کاربر جاری پیدا نشد." }, 404);
+      }
+
+      const receiver = this.getUserById(toUserId);
+      if (!receiver) {
+        return json({ error: "گیرنده پیدا نشد." }, 404);
+      }
+
+      const message = {
+        id: crypto.randomUUID(),
+        content,
+        fromUserId: sender.id,
+        toUserId: receiver.id,
+        fromDisplayName: sender.displayName,
+        createdAt: Date.now(),
+      } satisfies StoredDirectMessage;
+
+      this.state.storage.sql.exec(
+        `INSERT INTO direct_messages (id, content, from_user_id, to_user_id, from_display_name, created_at)
+         VALUES (?, ?, ?, ?, ?, ?)`,
+        message.id,
+        message.content,
+        message.fromUserId,
+        message.toUserId,
+        message.fromDisplayName,
+        message.createdAt,
+      );
+
+      return json({ message });
     }
 
     return new Response("Not found", { status: 404 });
@@ -683,6 +781,33 @@ export default {
       return authStub.fetch(
         `https://auth/contacts?username=${encodeURIComponent(payload.username)}`,
       );
+    }
+
+    if (request.method === "GET" && url.pathname === "/api/direct") {
+      if (!payload) {
+        return json({ error: "Unauthorized" }, 401);
+      }
+
+      return authStub.fetch(
+        `https://auth/direct?username=${encodeURIComponent(payload.username)}`,
+      );
+    }
+
+    if (request.method === "POST" && url.pathname === "/api/direct/send") {
+      if (!payload) {
+        return json({ error: "Unauthorized" }, 401);
+      }
+
+      const body = (await request.json()) as { toUserId?: string; content?: string };
+      return authStub.fetch("https://auth/direct/send", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          username: payload.username,
+          toUserId: body.toUserId,
+          content: body.content,
+        }),
+      });
     }
 
     return (
