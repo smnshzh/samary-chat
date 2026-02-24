@@ -18,10 +18,24 @@ import {
   type Message,
 } from "../shared";
 
+const APP_LOGO_URL = "https://planning-marketer.storage.c2.liara.space/logo/logo.png";
+
 type AuthResponse = {
   authenticated: boolean;
   user?: AuthUser;
 };
+
+function AppBrand() {
+  return (
+    <div className="app-brand">
+      <img src={APP_LOGO_URL} alt="Samary Chat" className="app-logo" />
+      <div>
+        <p className="brand-kicker">Private Chat</p>
+        <h4>Samary Chat</h4>
+      </div>
+    </div>
+  );
+}
 
 function LoginGate({ onAuthenticated }: { onAuthenticated: (user: AuthUser) => void }) {
   const [mode, setMode] = useState<"login" | "register">("login");
@@ -62,37 +76,41 @@ function LoginGate({ onAuthenticated }: { onAuthenticated: (user: AuthUser) => v
   };
 
   return (
-    <div className="auth container">
-      <h4>{mode === "login" ? "ورود" : "ثبت‌نام"}</h4>
-      <form onSubmit={submit}>
-        <input
-          type="text"
-          placeholder="نام کاربری"
-          value={username}
-          onChange={(event) => setUsername(event.target.value)}
-          minLength={3}
-          required
-        />
-        <input
-          type="password"
-          placeholder="رمز عبور"
-          value={password}
-          onChange={(event) => setPassword(event.target.value)}
-          minLength={6}
-          required
-        />
-        <button type="submit" disabled={loading}>
-          {loading ? "..." : mode === "login" ? "ورود" : "ثبت‌نام"}
+    <div className="auth-shell">
+      <div className="auth container glass-panel">
+        <AppBrand />
+        <p className="muted">ارتباط امن و خصوصی با دوستانت در یک محیط مدرن.</p>
+        <h5>{mode === "login" ? "ورود" : "ثبت‌نام"}</h5>
+        <form onSubmit={submit}>
+          <input
+            type="text"
+            placeholder="نام کاربری"
+            value={username}
+            onChange={(event) => setUsername(event.target.value)}
+            minLength={3}
+            required
+          />
+          <input
+            type="password"
+            placeholder="رمز عبور"
+            value={password}
+            onChange={(event) => setPassword(event.target.value)}
+            minLength={6}
+            required
+          />
+          <button type="submit" disabled={loading} className="button-primary full-width">
+            {loading ? "..." : mode === "login" ? "ورود" : "ثبت‌نام"}
+          </button>
+        </form>
+        <button
+          className="auth-switch"
+          type="button"
+          onClick={() => setMode(mode === "login" ? "register" : "login")}
+        >
+          {mode === "login" ? "حساب ندارید؟ ثبت‌نام" : "حساب دارید؟ ورود"}
         </button>
-      </form>
-      <button
-        className="auth-switch"
-        type="button"
-        onClick={() => setMode(mode === "login" ? "register" : "login")}
-      >
-        {mode === "login" ? "حساب ندارید؟ ثبت‌نام" : "حساب دارید؟ ورود"}
-      </button>
-      {error ? <p className="auth-error">{error}</p> : null}
+        {error ? <p className="auth-error">{error}</p> : null}
+      </div>
     </div>
   );
 }
@@ -301,12 +319,79 @@ function ChatApp({ user, onUserUpdate }: { user: AuthUser; onUserUpdate: (user: 
   };
 
   return (
-    <div className="chat container">
-      <div className="auth-header">
-        <div>
+    <div className="chat-app">
+      <aside className="sidebar glass-panel">
+        <AppBrand />
+        <div className="user-block">
           <div>وارد شده با: {user.username}</div>
           <div>آیدی شما: <code>{user.id}</code></div>
         </div>
+
+        <div className="panel">
+          <h6>پروفایل</h6>
+          <form
+            onSubmit={async (event) => {
+              event.preventDefault();
+              const response = await fetch("/api/users/profile", {
+                method: "POST",
+                credentials: "include",
+                headers: { "content-type": "application/json" },
+                body: JSON.stringify({ displayName: profileName, bio: profileBio }),
+              });
+              const data = (await response.json()) as { user?: AuthUser; error?: string };
+              if (response.ok && data.user) {
+                onUserUpdate(data.user);
+                setStatusMessage("پروفایل با موفقیت ذخیره شد.");
+              } else {
+                setStatusMessage(data.error ?? "خطا در ذخیره پروفایل.");
+              }
+            }}
+          >
+            <input value={profileName} onChange={(e) => setProfileName(e.target.value)} placeholder="نام نمایشی" required />
+            <input value={profileBio} onChange={(e) => setProfileBio(e.target.value)} placeholder="بیو" />
+            <button type="submit">ذخیره پروفایل</button>
+          </form>
+        </div>
+
+        <div className="panel">
+          <h6>افزودن مخاطب</h6>
+          <form
+            onSubmit={async (event) => {
+              event.preventDefault();
+              const response = await fetch("/api/users/contacts/add", {
+                method: "POST",
+                credentials: "include",
+                headers: { "content-type": "application/json" },
+                body: JSON.stringify({ userId: contactIdInput.trim() }),
+              });
+              const data = (await response.json()) as { error?: string };
+              if (response.ok) {
+                setContactIdInput("");
+                setStatusMessage("کاربر اضافه شد.");
+                await loadContacts();
+              } else {
+                setStatusMessage(data.error ?? "افزودن کاربر ناموفق بود.");
+              }
+            }}
+          >
+            <input
+              type="text"
+              value={contactIdInput}
+              onChange={(event) => setContactIdInput(event.target.value)}
+              placeholder="User ID"
+              required
+            />
+            <button type="submit">Add</button>
+          </form>
+          <ul className="contact-list">
+            {contacts.map((contact) => (
+              <li key={contact.id}>
+                {contact.displayName} ({contact.username})
+              </li>
+            ))}
+          </ul>
+        </div>
+
         <button
           type="button"
           onClick={async () => {
@@ -319,138 +404,78 @@ function ChatApp({ user, onUserUpdate }: { user: AuthUser; onUserUpdate: (user: 
         >
           خروج
         </button>
-      </div>
+      </aside>
 
-      <div className="panel">
-        <h6>پروفایل</h6>
-        <form
-          onSubmit={async (event) => {
-            event.preventDefault();
-            const response = await fetch("/api/users/profile", {
-              method: "POST",
-              credentials: "include",
-              headers: { "content-type": "application/json" },
-              body: JSON.stringify({ displayName: profileName, bio: profileBio }),
-            });
-            const data = (await response.json()) as { user?: AuthUser; error?: string };
-            if (response.ok && data.user) {
-              onUserUpdate(data.user);
-              setStatusMessage("پروفایل با موفقیت ذخیره شد.");
-            } else {
-              setStatusMessage(data.error ?? "خطا در ذخیره پروفایل.");
-            }
-          }}
-        >
-          <input value={profileName} onChange={(e) => setProfileName(e.target.value)} placeholder="نام نمایشی" required />
-          <input value={profileBio} onChange={(e) => setProfileBio(e.target.value)} placeholder="بیو" />
-          <button type="submit">ذخیره پروفایل</button>
-        </form>
-      </div>
+      <main className="chat-main glass-panel">
+        <div className="panel">
+          <h6>تماس تصویری خصوصی</h6>
+          <input
+            value={callTargetId}
+            onChange={(event) => setCallTargetId(event.target.value)}
+            placeholder="آیدی کاربر مقصد"
+          />
+          <div className="call-actions">
+            <button type="button" onClick={() => void startVideoCall()}>شروع تماس</button>
+            <button type="button" onClick={endCall}>قطع تماس</button>
+          </div>
+          {incomingCallFrom ? <p>تماس ورودی از: {incomingCallFrom}</p> : null}
+          <div className="videos">
+            <video ref={localVideoRef} autoPlay muted playsInline />
+            <video ref={remoteVideoRef} autoPlay playsInline />
+          </div>
+          {callActive ? <p>تماس فعال است.</p> : null}
+        </div>
 
-      <div className="panel">
-        <h6>افزودن کاربر با آیدی</h6>
+        {statusMessage ? <p className="status-line">{statusMessage}</p> : null}
+
+        <section className="messages-shell">
+          {messages.map((message) => (
+            <div key={message.id} className={`message-bubble ${message.user === user.displayName ? "self" : "other"}`}>
+              <div className="message-user">{message.user}</div>
+              <div>{message.content}</div>
+            </div>
+          ))}
+        </section>
+
         <form
-          onSubmit={async (event) => {
-            event.preventDefault();
-            const response = await fetch("/api/users/contacts/add", {
-              method: "POST",
-              credentials: "include",
-              headers: { "content-type": "application/json" },
-              body: JSON.stringify({ userId: contactIdInput.trim() }),
-            });
-            const data = (await response.json()) as { error?: string };
-            if (response.ok) {
-              setContactIdInput("");
-              setStatusMessage("کاربر اضافه شد.");
-              await loadContacts();
-            } else {
-              setStatusMessage(data.error ?? "افزودن کاربر ناموفق بود.");
+          className="compose-row"
+          onSubmit={(e) => {
+            e.preventDefault();
+            const content = e.currentTarget.elements.namedItem("content") as HTMLInputElement;
+            if (!content.value.trim()) {
+              return;
             }
+
+            const chatMessage: ChatMessage = {
+              id: nanoid(8),
+              content: content.value,
+              user: user.displayName,
+              role: "user",
+            };
+            setMessages((allMessages) => [...allMessages, chatMessage]);
+
+            socket.send(
+              JSON.stringify({
+                type: "add",
+                ...chatMessage,
+              } satisfies Message),
+            );
+
+            content.value = "";
           }}
         >
           <input
             type="text"
-            value={contactIdInput}
-            onChange={(event) => setContactIdInput(event.target.value)}
-            placeholder="User ID"
-            required
+            name="content"
+            className="my-input-text"
+            placeholder={`سلام ${user.displayName}! پیام خود را بنویس...`}
+            autoComplete="off"
           />
-          <button type="submit">Add</button>
+          <button type="submit" className="send-message button-primary">
+            ارسال
+          </button>
         </form>
-        <ul>
-          {contacts.map((contact) => (
-            <li key={contact.id}>
-              {contact.displayName} ({contact.username}) — <code>{contact.id}</code>
-            </li>
-          ))}
-        </ul>
-      </div>
-
-      <div className="panel">
-        <h6>مکالمه تصویری</h6>
-        <input
-          value={callTargetId}
-          onChange={(event) => setCallTargetId(event.target.value)}
-          placeholder="آیدی کاربر مقصد"
-        />
-        <div className="call-actions">
-          <button type="button" onClick={() => void startVideoCall()}>شروع تماس</button>
-          <button type="button" onClick={endCall}>قطع تماس</button>
-        </div>
-        {incomingCallFrom ? <p>تماس ورودی از: {incomingCallFrom}</p> : null}
-        <div className="videos">
-          <video ref={localVideoRef} autoPlay muted playsInline />
-          <video ref={remoteVideoRef} autoPlay playsInline />
-        </div>
-        {callActive ? <p>تماس فعال است.</p> : null}
-      </div>
-
-      {statusMessage ? <p>{statusMessage}</p> : null}
-
-      {messages.map((message) => (
-        <div key={message.id} className="row message">
-          <div className="two columns user">{message.user}</div>
-          <div className="ten columns">{message.content}</div>
-        </div>
-      ))}
-      <form
-        className="row"
-        onSubmit={(e) => {
-          e.preventDefault();
-          const content = e.currentTarget.elements.namedItem("content") as HTMLInputElement;
-          if (!content.value.trim()) {
-            return;
-          }
-
-          const chatMessage: ChatMessage = {
-            id: nanoid(8),
-            content: content.value,
-            user: user.displayName,
-            role: "user",
-          };
-          setMessages((allMessages) => [...allMessages, chatMessage]);
-
-          socket.send(
-            JSON.stringify({
-              type: "add",
-              ...chatMessage,
-            } satisfies Message),
-          );
-
-          content.value = "";
-        }}
-      >
-        <input
-          type="text"
-          name="content"
-          className="ten columns my-input-text"
-          placeholder={`سلام ${user.displayName}! پیام خود را بنویس...`}
-          autoComplete="off"
-        />
-        <button type="submit" className="send-message two columns">
-          Send
-        </button>
-      </form>
+      </main>
     </div>
   );
 }
