@@ -148,17 +148,10 @@ function ChatApp({ user, onUserUpdate }: { user: AuthUser; onUserUpdate: (user: 
       const message = JSON.parse(evt.data as string) as Message;
 
       if (message.type === "direct-all") {
-        setDirectMessages(message.messages);
         return;
       }
 
       if (message.type === "direct-add") {
-        setDirectMessages((all) => {
-          if (all.some((item) => item.id === message.id)) {
-            return all;
-          }
-          return [...all, message];
-        });
         return;
       }
 
@@ -211,8 +204,30 @@ function ChatApp({ user, onUserUpdate }: { user: AuthUser; onUserUpdate: (user: 
     }
   };
 
+  const loadDirectMessages = async () => {
+    const response = await fetch("/api/direct", { credentials: "include" });
+    const data = (await response.json()) as { messages?: DirectMessage[]; error?: string };
+    if (response.ok && data.messages) {
+      setDirectMessages(data.messages);
+    } else if (data.error) {
+      setStatusMessage(data.error);
+    }
+  };
+
   useEffect(() => {
     void loadContacts();
+    void loadDirectMessages();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  useEffect(() => {
+    const poller = window.setInterval(() => {
+      void loadDirectMessages();
+    }, 3000);
+
+    return () => {
+      window.clearInterval(poller);
+    };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
@@ -638,18 +653,36 @@ function ChatApp({ user, onUserUpdate }: { user: AuthUser; onUserUpdate: (user: 
               return;
             }
 
-            const chatMessage: DirectMessage = {
-              type: "direct-add",
-              id: nanoid(10),
-              content: content.value.trim(),
-              fromUserId: user.id,
-              toUserId: selectedContact.id,
-              fromDisplayName: user.displayName,
-              createdAt: Date.now(),
-            };
+            void (async () => {
+              const response = await fetch("/api/direct/send", {
+                method: "POST",
+                credentials: "include",
+                headers: { "content-type": "application/json" },
+                body: JSON.stringify({
+                  toUserId: selectedContact.id,
+                  content: content.value.trim(),
+                }),
+              });
 
-            setDirectMessages((allMessages) => [...allMessages, chatMessage]);
-            socket.send(JSON.stringify(chatMessage satisfies Message));
+              const data = (await response.json()) as {
+                message?: DirectMessage;
+                error?: string;
+              };
+
+              if (!response.ok || !data.message) {
+                setStatusMessage(data.error ?? "ارسال پیام ناموفق بود.");
+                return;
+              }
+
+              const sentMessage = data.message;
+              setDirectMessages((allMessages) => {
+                if (allMessages.some((item) => item.id === sentMessage.id)) {
+                  return allMessages;
+                }
+                return [...allMessages, sentMessage];
+              });
+            })();
+
             socket.send(
               JSON.stringify({
                 type: "typing",
@@ -696,17 +729,35 @@ function ChatApp({ user, onUserUpdate }: { user: AuthUser; onUserUpdate: (user: 
                   if (!selectedContact) {
                     return;
                   }
-                  const chatMessage: DirectMessage = {
-                    type: "direct-add",
-                    id: nanoid(10),
-                    content: emoji,
-                    fromUserId: user.id,
-                    toUserId: selectedContact.id,
-                    fromDisplayName: user.displayName,
-                    createdAt: Date.now(),
-                  };
-                  setDirectMessages((allMessages) => [...allMessages, chatMessage]);
-                  socket.send(JSON.stringify(chatMessage satisfies Message));
+                  void (async () => {
+                    const response = await fetch("/api/direct/send", {
+                      method: "POST",
+                      credentials: "include",
+                      headers: { "content-type": "application/json" },
+                      body: JSON.stringify({
+                        toUserId: selectedContact.id,
+                        content: emoji,
+                      }),
+                    });
+
+                    const data = (await response.json()) as {
+                      message?: DirectMessage;
+                      error?: string;
+                    };
+
+                    if (!response.ok || !data.message) {
+                      setStatusMessage(data.error ?? "ارسال پیام ناموفق بود.");
+                      return;
+                    }
+
+                    const sentMessage = data.message;
+                    setDirectMessages((allMessages) => {
+                      if (allMessages.some((item) => item.id === sentMessage.id)) {
+                        return allMessages;
+                      }
+                      return [...allMessages, sentMessage];
+                    });
+                  })();
                 }}
               >
                 {emoji}
